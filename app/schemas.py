@@ -58,6 +58,7 @@ class VillageStateOut(BaseModel):
     world_state: WorldStateOut
     agents: list[AgentStateOut]
     recent_events: list[EventLogOut]
+    tiles: list[TileOut] = []
 
 
 class SpawnConfirmToken(BaseModel):

@@ -50,10 +50,14 @@ async def _build_village_state(db: AsyncSession) -> VillageStateOut:
     )
     events = events_result.scalars().all()
 
+    tiles_result = await db.execute(select(Tile))
+    tiles = tiles_result.scalars().all()
+
     return VillageStateOut(
         world_state=world_to_out(world),
         agents=[agent_to_out(a) for a in agents],
         recent_events=[event_to_out(e) for e in events],
+        tiles=[tile_to_out(t) for t in tiles],
     )
 
 

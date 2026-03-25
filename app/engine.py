@@ -801,20 +801,25 @@ async def _broadcast_state(
     agents: list[VillageAgent],
     db: AsyncSession,
 ):
-    from app.schemas import world_to_out, agent_to_out, event_to_out
+    from app.schemas import world_to_out, agent_to_out, event_to_out, tile_to_out
 
     # Get recent events
-    result = await db.execute(
+    events_result = await db.execute(
         select(EventLog)
         .order_by(EventLog.created_at.desc())
         .limit(10)
     )
-    recent_events = list(result.scalars().all())
+    recent_events = list(events_result.scalars().all())
+
+    # Get all tiles (viewers see everything)
+    tiles_result = await db.execute(select(Tile))
+    all_tiles = tiles_result.scalars().all()
 
     payload = {
         "world_state": world_to_out(world).model_dump(),
         "agents": [agent_to_out(a).model_dump() for a in agents],
         "recent_events": [event_to_out(e).model_dump() for e in recent_events],
+        "tiles": [tile_to_out(t).model_dump() for t in all_tiles],
     }
     await sse_manager.broadcast("tick_update", payload)
 
