@@ -113,14 +113,31 @@ class AgentBrain:
 
         # Summarise available recipes for context
         from app.crafting import RECIPES
-        craftable_hints = []
+        tile_features = current_tile.get("features", []) if current_tile else []
+        tile_buildings = [b.get("type", "") for b in (current_tile.get("buildings", []) if current_tile else [])]
+        all_nearby_features = set(tile_features + tile_buildings)
+
+        craftable_now = []
+        craftable_nearby = []  # have materials, but need facility
         for name, recipe in RECIPES.items():
             reqs = recipe.get("requires", {})
             if not reqs:
                 continue
-            if all(agent.inventory.get(k, 0) >= v for k, v in reqs.items() if v > 0):
-                craftable_hints.append(name)
-        craftable_str = ", ".join(craftable_hints[:8]) if craftable_hints else "none right now"
+            has_materials = all(agent.inventory.get(k, 0) >= v for k, v in reqs.items() if v > 0)
+            tool = recipe.get("tool_req")
+            has_tool = not tool or agent.inventory.get(tool, 0) >= 1
+            near_req = recipe.get("near_req")
+            has_near = not near_req or near_req in all_nearby_features
+
+            if has_materials and has_tool:
+                if has_near:
+                    craftable_now.append(name)
+                else:
+                    craftable_nearby.append(f"{name}(needs {near_req})")
+
+        craftable_str = ", ".join(craftable_now[:8]) if craftable_now else "none right now"
+        if craftable_nearby:
+            craftable_str += f" | with facility: {', '.join(craftable_nearby[:4])}"
 
         system_prompt = f"""\
 You are {agent.name}. {agent.personality_summary}
@@ -159,6 +176,7 @@ Choose your next action. Be yourself. Think practically about your needs.
 Valid actions (respond with ONLY valid JSON, one action):
 {{"action":"move","direction":"n/s/e/w/ne/nw/se/sw","thought":"..."}}
 {{"action":"gather","resource":"type","thought":"..."}}
+{{"action":"eat","food":"raw_food or cooked_food","thought":"..."}}
 {{"action":"craft","recipe":"name","thought":"..."}}
 {{"action":"build","structure":"type","thought":"..."}}
 {{"action":"speak","target":"agent_name_or_broadcast","message":"...","thought":"..."}}
@@ -224,7 +242,7 @@ Valid actions (respond with ONLY valid JSON, one action):
 
         # Validate action field
         valid_actions = {
-            "move", "gather", "craft", "build", "speak",
+            "move", "gather", "eat", "craft", "build", "speak",
             "rest", "examine", "write", "set_goal", "wait",
         }
         if action.get("action") not in valid_actions:

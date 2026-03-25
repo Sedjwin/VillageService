@@ -152,9 +152,18 @@ async def lifespan(app: FastAPI):
     await _init_world_state()
 
     # Import here to avoid circular on startup
-    from app.engine import engine  # noqa: F401
+    from app.engine import engine
+    from app.models import WorldState
 
-    logger.info("VillageService ready. Engine is stopped — admin must press play.")
+    # Auto-resume if engine was running before restart
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(WorldState).where(WorldState.id == 1))
+        world = result.scalar_one_or_none()
+        if world and world.engine_state == "running":
+            logger.info("Resuming engine — was running before restart.")
+            await engine.start()
+        else:
+            logger.info("VillageService ready. Engine is stopped — admin must press play.")
 
     yield
 

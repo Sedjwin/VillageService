@@ -425,6 +425,9 @@ async def _execute_action(
     elif act == "speak":
         await _action_speak(agent, action, db, world, all_agents)
 
+    elif act == "eat":
+        await _action_eat(agent, action, db, world)
+
     elif act == "rest":
         await _action_rest(agent, action, db, world)
 
@@ -652,6 +655,35 @@ async def _action_speak(
         [agent.agent_id] + ([target_agent.agent_id] if target_agent else []),
         agent.x, agent.y,
     )
+
+
+async def _action_eat(
+    agent: VillageAgent,
+    action: dict,
+    db: AsyncSession,
+    world: WorldState,
+):
+    food = action.get("food", "")
+    inv = agent.inventory
+
+    if food == "cooked_food" and inv.get("cooked_food", 0) > 0:
+        inv["cooked_food"] -= 1
+        if inv["cooked_food"] == 0:
+            del inv["cooked_food"]
+        agent.inventory = inv
+        agent.needs = satisfy_need(agent.needs, "hunger", 40)
+        agent.add_memory("Ate cooked food — properly satisfied.")
+        await _log_event(db, world, "need", f"{agent.name} ate cooked food.", [agent.agent_id], agent.x, agent.y)
+    elif food in ("raw_food", "") and inv.get("raw_food", 0) > 0:
+        inv["raw_food"] -= 1
+        if inv["raw_food"] == 0:
+            del inv["raw_food"]
+        agent.inventory = inv
+        agent.needs = satisfy_need(agent.needs, "hunger", 22)
+        agent.add_memory("Ate raw food. Not ideal, but filling enough.")
+        await _log_event(db, world, "need", f"{agent.name} ate raw food.", [agent.agent_id], agent.x, agent.y)
+    else:
+        agent.add_memory("Wanted to eat but had nothing to eat.")
 
 
 async def _action_rest(
