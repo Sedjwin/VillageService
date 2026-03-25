@@ -1,0 +1,15 @@
+[Unit]
+Description=VillageService — Autonomous agent village simulation
+After=network.target aigateway.service agentmanager.service dashboard.service
+
+[Service]
+Type=simple
+User=sedjwin
+WorkingDirectory=/home/sedjwin/VillageService
+ExecStart=/home/sedjwin/VillageService/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8009
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/home/sedjwin/VillageService/.env
+
+[Install]
+WantedBy=multi-user.target

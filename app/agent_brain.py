@@ -1,0 +1,234 @@
+"""
+Per-agent LLM decision loop.
+Each agent is given its full sensory context and asked what it wants to do.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import TYPE_CHECKING
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+_FALLBACK_ACTION = {"action": "wait", "thought": "Couldn't decide — taking a breath."}
+
+_INVENTORY_EMPTY = "Nothing."
+_MEMORY_EMPTY = "Nothing yet."
+
+
+def _mood_description(mood: float) -> str:
+    if mood >= 0.85:
+        return "content and energised"
+    if mood >= 0.65:
+        return "doing alright"
+    if mood >= 0.45:
+        return "a bit worn"
+    if mood >= 0.25:
+        return "struggling"
+    return "desperate"
+
+
+def _needs_summary(needs: dict) -> str:
+    parts = []
+    for key, label in [("hunger", "Hunger"), ("rest", "Rest"), ("warmth", "Warmth"), ("social", "Social")]:
+        val = needs.get(key, 0)
+        parts.append(f"{label}: {int(val)}%")
+    return "  ".join(parts)
+
+
+def _format_inventory(inventory: dict) -> str:
+    if not inventory:
+        return _INVENTORY_EMPTY
+    return ", ".join(f"{qty}x {item}" for item, qty in inventory.items())
+
+
+def _format_visible_tiles(visible_tiles: list[dict]) -> str:
+    if not visible_tiles:
+        return "  (nothing visible beyond your feet)"
+    lines = []
+    for t in visible_tiles[:12]:  # limit context size
+        x, y = t.get("x", 0), t.get("y", 0)
+        terrain = t.get("terrain", "?")
+        features = t.get("features", [])
+        resources = [r.get("type", "") for r in t.get("resource_nodes", []) if r.get("qty", 0) > 0]
+        buildings = [b.get("type", "") for b in t.get("buildings", [])]
+        detail_parts = []
+        if features:
+            detail_parts.append("features: " + ", ".join(features))
+        if resources:
+            detail_parts.append("resources: " + ", ".join(resources))
+        if buildings:
+            detail_parts.append("buildings: " + ", ".join(buildings))
+        detail = " | ".join(detail_parts) if detail_parts else terrain
+        lines.append(f"  ({x},{y}) {terrain} — {detail}")
+    return "\n".join(lines)
+
+
+def _format_nearby_agents(nearby: list[dict]) -> str:
+    if not nearby:
+        return "  No one nearby."
+    lines = []
+    for a in nearby[:6]:
+        name = a.get("name", "?")
+        state = a.get("state", "idle")
+        lines.append(f"  {name} at ({a.get('x',0)},{a.get('y',0)}) — {state}")
+    return "\n".join(lines)
+
+
+def _format_memory(memory: list[str]) -> str:
+    if not memory:
+        return _MEMORY_EMPTY
+    return "\n".join(f"  - {m}" for m in memory[-10:])
+
+
+class AgentBrain:
+
+    async def decide_action(
+        self,
+        agent,
+        visible_tiles: list[dict],
+        world_state,
+        nearby_agents: list[dict],
+        model: str,
+        aigateway_url: str,
+        token: str,
+    ) -> dict:
+        """
+        Ask the agent's LLM what it wants to do.
+        Returns action dict: {action, thought, ...params}
+        """
+        current_tile = next(
+            (t for t in visible_tiles if t.get("x") == agent.x and t.get("y") == agent.y),
+            None,
+        )
+        tile_narrative = current_tile.get("narrative", "unfamiliar ground") if current_tile else "unfamiliar ground"
+
+        god_hint_block = ""
+        if agent.god_hint:
+            god_hint_block = f"\n[IMPORTANT MESSAGE FROM ABOVE]: {agent.god_hint}\n"
+
+        # Summarise available recipes for context
+        from app.crafting import RECIPES
+        craftable_hints = []
+        for name, recipe in RECIPES.items():
+            reqs = recipe.get("requires", {})
+            if not reqs:
+                continue
+            if all(agent.inventory.get(k, 0) >= v for k, v in reqs.items() if v > 0):
+                craftable_hints.append(name)
+        craftable_str = ", ".join(craftable_hints[:8]) if craftable_hints else "none right now"
+
+        system_prompt = f"""\
+You are {agent.name}. {agent.personality_summary}
+
+You are living in a real world, trying to build a life. You have genuine needs.
+This is not a simulation or test. Do what you would actually do.
+Your personality shapes HOW you act, not whether you act sensibly.
+Survival matters. Relationships matter. Curiosity matters.
+"""
+
+        user_prompt = f"""\
+CURRENT STATE:
+  Location: ({agent.x}, {agent.y}) — {tile_narrative}
+  Time: Day {world_state.game_day}, {world_state.game_hour:02d}:00 | {world_state.season} | {world_state.weather}
+  Mood: {_mood_description(agent.mood)}
+  {_needs_summary(agent.needs)}
+
+WHAT YOU CAN SEE:
+{_format_visible_tiles(visible_tiles)}
+
+NEARBY PEOPLE:
+{_format_nearby_agents(nearby_agents)}
+
+YOUR INVENTORY:
+  {_format_inventory(agent.inventory)}
+
+CRAFTABLE RIGHT NOW: {craftable_str}
+
+CURRENT GOAL: {agent.current_goal or "None — decide what matters to you"}
+
+RECENT MEMORY:
+{_format_memory(agent.village_memory)}{god_hint_block}
+
+Choose your next action. Be yourself. Think practically about your needs.
+
+Valid actions (respond with ONLY valid JSON, one action):
+{{"action":"move","direction":"n/s/e/w/ne/nw/se/sw","thought":"..."}}
+{{"action":"gather","resource":"type","thought":"..."}}
+{{"action":"craft","recipe":"name","thought":"..."}}
+{{"action":"build","structure":"type","thought":"..."}}
+{{"action":"speak","target":"agent_name_or_broadcast","message":"...","thought":"..."}}
+{{"action":"rest","hours":1,"thought":"..."}}
+{{"action":"examine","target":"description","thought":"..."}}
+{{"action":"write","content":"...","medium":"note","thought":"..."}}
+{{"action":"set_goal","goal":"...","thought":"..."}}
+{{"action":"wait","thought":"..."}}
+"""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            url = f"{aigateway_url.rstrip('/')}/v1/chat/completions"
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "max_tokens": 150,
+                "temperature": 0.9,
+            }
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"].strip()
+
+            return self._parse_action(content)
+
+        except httpx.HTTPStatusError as exc:
+            logger.warning("AgentBrain LLM call failed for %s: HTTP %d", agent.name, exc.response.status_code)
+        except httpx.RequestError as exc:
+            logger.warning("AgentBrain LLM unreachable for %s: %s", agent.name, exc)
+        except Exception as exc:
+            logger.error("AgentBrain unexpected error for %s: %s", agent.name, exc)
+
+        return _FALLBACK_ACTION
+
+    def _parse_action(self, text: str) -> dict:
+        """Extract and validate JSON action from LLM response."""
+        # Strip markdown fences
+        text = re.sub(r"^```(?:json)?\s*", "", text.strip())
+        text = re.sub(r"\s*```$", "", text.strip())
+
+        # Find first {...} block
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            logger.warning("AgentBrain: no JSON found in response: %r", text[:100])
+            return dict(_FALLBACK_ACTION)
+
+        try:
+            action = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            logger.warning("AgentBrain: JSON parse failed: %r", text[:100])
+            return dict(_FALLBACK_ACTION)
+
+        # Validate action field
+        valid_actions = {
+            "move", "gather", "craft", "build", "speak",
+            "rest", "examine", "write", "set_goal", "wait",
+        }
+        if action.get("action") not in valid_actions:
+            logger.warning("AgentBrain: unknown action %r, defaulting to wait", action.get("action"))
+            return {"action": "wait", "thought": action.get("thought", "Reconsidering.")}
+
+        return action

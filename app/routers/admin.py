@@ -1,0 +1,646 @@
+"""
+Admin API routes — require Dashboard JWT with role == "admin".
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import secrets
+import time
+import uuid
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.database import get_db
+from app.models import EventLog, ModelConfig, Tile, VillageAgent, WorldState
+from app.schemas import SpawnConfirmToken, agent_to_out, world_to_out
+from app.sse import sse_manager
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/village", tags=["admin"])
+
+# In-memory pending token store: token -> {agent_id, action, expires_at}
+_pending_tokens: dict[str, dict] = {}
+_TOKEN_TTL = 10  # seconds
+
+
+# ---------------------------------------------------------------------------
+# Auth dependency
+# ---------------------------------------------------------------------------
+
+async def require_admin(authorization: str = Header(...)):
+    """Validate JWT against Dashboard /api/auth/me. Require admin role."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token.")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{settings.dashboard_url}/api/auth/me",
+                headers={"Authorization": authorization},
+            )
+    except httpx.RequestError as exc:
+        logger.error("Auth check failed (network): %s", exc)
+        raise HTTPException(status_code=503, detail="Auth service unreachable.")
+
+    if resp.status_code == 401:
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=503, detail="Auth service error.")
+
+    user = resp.json()
+    role = user.get("role", "")
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required.")
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
+
+class EngineConfigUpdate(BaseModel):
+    tick_rate_seconds: int
+
+
+class HintRequest(BaseModel):
+    text: str
+
+
+class TeleportRequest(BaseModel):
+    x: int
+    y: int
+
+
+class GiveRequest(BaseModel):
+    item: str
+    qty: int
+
+
+class AdminEventRequest(BaseModel):
+    type: str
+    x: int | None = None
+    y: int | None = None
+    params: dict = {}
+
+
+class DropItemRequest(BaseModel):
+    x: int
+    y: int
+    item: str
+    qty: int
+
+
+class WeatherUpdate(BaseModel):
+    weather: str
+
+
+class SeasonUpdate(BaseModel):
+    season: str
+
+
+class ModelConfigUpdate(BaseModel):
+    task: str
+    model_id: str
+    temperature: float = 0.9
+    max_tokens: int = 512
+
+
+class RelationshipUpdate(BaseModel):
+    agent_a: str
+    agent_b: str
+    score: int
+
+
+# ---------------------------------------------------------------------------
+# Engine control
+# ---------------------------------------------------------------------------
+
+@router.post("/engine/start")
+async def engine_start(_: dict = Depends(require_admin)):
+    from app.engine import engine
+    await engine.start()
+    return {"status": "started"}
+
+
+@router.post("/engine/pause")
+async def engine_pause(_: dict = Depends(require_admin)):
+    from app.engine import engine
+    await engine.pause()
+    return {"status": "paused"}
+
+
+@router.post("/engine/stop")
+async def engine_stop(_: dict = Depends(require_admin)):
+    from app.engine import engine
+    await engine.stop()
+    return {"status": "stopped"}
+
+
+@router.post("/engine/step")
+async def engine_step(_: dict = Depends(require_admin)):
+    from app.engine import engine
+    await engine.step_once()
+    return {"status": "stepped"}
+
+
+@router.put("/engine/config")
+async def engine_config(
+    body: EngineConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    if not world:
+        raise HTTPException(status_code=503, detail="World not initialised.")
+    world.tick_rate_seconds = max(1, body.tick_rate_seconds)
+    await db.commit()
+    return {"tick_rate_seconds": world.tick_rate_seconds}
+
+
+@router.get("/engine/status")
+async def engine_status(
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    if not world:
+        raise HTTPException(status_code=503, detail="World not initialised.")
+    return {
+        "state": world.engine_state,
+        "tick": world.tick,
+        "game_day": world.game_day,
+        "game_hour": world.game_hour,
+        "tick_rate_seconds": world.tick_rate_seconds,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Agent spawn / despawn
+# ---------------------------------------------------------------------------
+
+def _issue_token(agent_id: str, action: str) -> str:
+    token = secrets.token_urlsafe(16)
+    _pending_tokens[token] = {
+        "agent_id": agent_id,
+        "action": action,
+        "expires_at": time.time() + _TOKEN_TTL,
+    }
+    return token
+
+
+def _redeem_token(token: str, expected_action: str, agent_id: str) -> bool:
+    entry = _pending_tokens.pop(token, None)
+    if not entry:
+        return False
+    if time.time() > entry["expires_at"]:
+        return False
+    if entry["agent_id"] != agent_id or entry["action"] != expected_action:
+        return False
+    return True
+
+
+@router.post("/agents/{agent_id}/spawn", response_model=SpawnConfirmToken)
+async def spawn_agent(
+    agent_id: str,
+    _: dict = Depends(require_admin),
+):
+    token = _issue_token(agent_id, "spawn")
+    return SpawnConfirmToken(
+        confirm_token=token,
+        expires_in=_TOKEN_TTL,
+        agent_id=agent_id,
+        action="spawn",
+    )
+
+
+@router.post("/agents/{agent_id}/spawn/confirm", status_code=201)
+async def spawn_agent_confirm(
+    agent_id: str,
+    confirm_token: str,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    if not _redeem_token(confirm_token, "spawn", agent_id):
+        raise HTTPException(status_code=400, detail="Invalid or expired confirm token.")
+
+    # Check for existing agent record
+    result = await db.execute(
+        select(VillageAgent).where(VillageAgent.agent_id == agent_id)
+    )
+    existing = result.scalar_one_or_none()
+    if existing and existing.in_simulation:
+        raise HTTPException(status_code=409, detail="Agent already in simulation.")
+
+    # Fetch agent info from AgentManager (via Dashboard proxy or direct)
+    agent_data = await _fetch_agent_info(agent_id)
+
+    if existing:
+        existing.in_simulation = True
+        agent = existing
+    else:
+        # Determine spawn position (random small offset from origin)
+        import random
+        ox = random.randint(-3, 3)
+        oy = random.randint(-3, 3)
+
+        agent = VillageAgent(
+            agent_id=agent_id,
+            name=agent_data.get("name", agent_id),
+            personality_summary=agent_data.get("personality_summary", agent_data.get("description", "")),
+            in_simulation=True,
+            x=ox,
+            y=oy,
+            state="idle",
+            avatar_primary_color=agent_data.get("primary_color", "#4a9eff"),
+            avatar_secondary_color=agent_data.get("secondary_color", "#1a3a6a"),
+            avatar_body_shape=agent_data.get("body_shape", "circle"),
+            avatar_eye_style=agent_data.get("eye_style", "round"),
+        )
+        agent.inventory = {}
+        agent.skills = {}
+        agent.needs = {"hunger": 30, "rest": 20, "warmth": 20, "social": 40}
+        agent.travel_path = []
+        agent.village_memory = []
+        agent.relationship_scores = {}
+        db.add(agent)
+
+    # Generate starter crate
+    result_world = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result_world.scalar_one_or_none()
+
+    from app.engine import engine
+    crate_model = settings.world_agent_model
+    bible = world.world_bible if world else ""
+    crate = await engine.world_agent.generate_starter_crate(
+        agent.name, agent.personality_summary, bible, crate_model
+    )
+
+    # Place crate items on spawn tile
+    result_tile = await db.execute(
+        select(Tile).where(Tile.x == agent.x, Tile.y == agent.y)
+    )
+    spawn_tile = result_tile.scalar_one_or_none()
+    if spawn_tile:
+        items = spawn_tile.items
+        for item_type, qty in crate["items"].items():
+            found = False
+            for existing_item in items:
+                if existing_item.get("type") == item_type:
+                    existing_item["qty"] = existing_item.get("qty", 0) + qty
+                    found = True
+                    break
+            if not found:
+                items.append({"type": item_type, "qty": qty})
+        spawn_tile.items = items
+
+    # Log + broadcast
+    if world:
+        log = EventLog(
+            id=str(uuid.uuid4()),
+            tick=world.tick,
+            game_day=world.game_day,
+            game_hour=world.game_hour,
+            event_type="spawn",
+            description=f"{agent.name} arrived at the village. {crate.get('narrative', '')}",
+            x=agent.x,
+            y=agent.y,
+        )
+        log.agents_involved = [agent_id]
+        db.add(log)
+        agent.joined_tick = world.tick
+
+    await db.commit()
+
+    await sse_manager.broadcast("agent_spawned", {
+        "agent_id": agent_id,
+        "name": agent.name,
+        "x": agent.x,
+        "y": agent.y,
+        "crate_narrative": crate.get("narrative", ""),
+    })
+
+    return {"agent_id": agent_id, "name": agent.name, "x": agent.x, "y": agent.y}
+
+
+@router.delete("/agents/{agent_id}", response_model=SpawnConfirmToken)
+async def despawn_agent(
+    agent_id: str,
+    _: dict = Depends(require_admin),
+):
+    token = _issue_token(agent_id, "despawn")
+    return SpawnConfirmToken(
+        confirm_token=token,
+        expires_in=_TOKEN_TTL,
+        agent_id=agent_id,
+        action="despawn",
+    )
+
+
+@router.delete("/agents/{agent_id}/confirm")
+async def despawn_agent_confirm(
+    agent_id: str,
+    confirm_token: str,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    if not _redeem_token(confirm_token, "despawn", agent_id):
+        raise HTTPException(status_code=400, detail="Invalid or expired confirm token.")
+
+    result = await db.execute(
+        select(VillageAgent).where(VillageAgent.agent_id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+
+    agent.in_simulation = False
+    agent.state = "idle"
+    await db.commit()
+
+    await sse_manager.broadcast("agent_despawned", {"agent_id": agent_id})
+    return {"status": "despawned", "agent_id": agent_id}
+
+
+# ---------------------------------------------------------------------------
+# God mode
+# ---------------------------------------------------------------------------
+
+@router.post("/agents/{agent_id}/hint")
+async def set_hint(
+    agent_id: str,
+    body: HintRequest,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(
+        select(VillageAgent).where(VillageAgent.agent_id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    agent.god_hint = body.text
+    await db.commit()
+    return {"status": "hint_set"}
+
+
+@router.post("/agents/{agent_id}/teleport")
+async def teleport_agent(
+    agent_id: str,
+    body: TeleportRequest,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(
+        select(VillageAgent).where(VillageAgent.agent_id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    agent.x = body.x
+    agent.y = body.y
+    agent.travel_path = []
+    agent.state = "idle"
+    agent.add_memory(f"Suddenly found myself at ({body.x},{body.y}).")
+    await db.commit()
+    return {"status": "teleported", "x": body.x, "y": body.y}
+
+
+@router.post("/agents/{agent_id}/give")
+async def give_item(
+    agent_id: str,
+    body: GiveRequest,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(
+        select(VillageAgent).where(VillageAgent.agent_id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    inv = agent.inventory
+    inv[body.item] = inv.get(body.item, 0) + body.qty
+    agent.inventory = inv
+    agent.add_memory(f"Received {body.qty}x {body.item} from somewhere.")
+    await db.commit()
+    return {"status": "given", "item": body.item, "qty": body.qty}
+
+
+# ---------------------------------------------------------------------------
+# World management
+# ---------------------------------------------------------------------------
+
+@router.post("/admin/event")
+async def trigger_event(
+    body: AdminEventRequest,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    from app.engine import engine
+    from app.models import WorldState, VillageAgent
+
+    result_world = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result_world.scalar_one_or_none()
+    agents_result = await db.execute(
+        select(VillageAgent).where(VillageAgent.in_simulation == True)
+    )
+    agents = list(agents_result.scalars().all())
+
+    description = await apply_event(
+        body.type, world, agents, db, engine.world_agent, settings.world_agent_model
+    )
+    if world and description:
+        log = EventLog(
+            id=str(uuid.uuid4()),
+            tick=world.tick,
+            game_day=world.game_day,
+            game_hour=world.game_hour,
+            event_type=body.type,
+            description=description,
+            x=body.x,
+            y=body.y,
+        )
+        log.agents_involved = []
+        db.add(log)
+    await db.commit()
+    return {"status": "event_applied", "description": description}
+
+
+@router.post("/admin/drop-item")
+async def drop_item(
+    body: DropItemRequest,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(Tile).where(Tile.x == body.x, Tile.y == body.y))
+    tile = result.scalar_one_or_none()
+    if not tile:
+        raise HTTPException(status_code=404, detail="Tile not found. Generate it first.")
+    items = tile.items
+    for existing in items:
+        if existing.get("type") == body.item:
+            existing["qty"] = existing.get("qty", 0) + body.qty
+            break
+    else:
+        items.append({"type": body.item, "qty": body.qty})
+    tile.items = items
+    await db.commit()
+    return {"status": "dropped", "x": body.x, "y": body.y, "item": body.item}
+
+
+@router.put("/admin/weather")
+async def set_weather(
+    body: WeatherUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    valid = {"clear", "cloudy", "rainy", "stormy", "snowy"}
+    if body.weather not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid weather. Valid: {valid}")
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    if not world:
+        raise HTTPException(status_code=503, detail="World not initialised.")
+    world.weather = body.weather
+    await db.commit()
+    return {"weather": body.weather}
+
+
+@router.put("/admin/season")
+async def set_season(
+    body: SeasonUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    valid = {"spring", "summer", "autumn", "winter"}
+    if body.season not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid season. Valid: {valid}")
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    if not world:
+        raise HTTPException(status_code=503, detail="World not initialised.")
+    world.season = body.season
+    await db.commit()
+    return {"season": body.season}
+
+
+@router.put("/admin/models")
+async def update_model_config(
+    body: ModelConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    valid_tasks = {"world_agent", "agent_brain", "conversation", "narration"}
+    if body.task not in valid_tasks:
+        raise HTTPException(status_code=400, detail=f"Invalid task. Valid: {valid_tasks}")
+
+    result = await db.execute(select(ModelConfig).where(ModelConfig.task == body.task))
+    config = result.scalar_one_or_none()
+    if config:
+        config.model_id = body.model_id
+        config.temperature = body.temperature
+        config.max_tokens = body.max_tokens
+    else:
+        config = ModelConfig(
+            task=body.task,
+            model_id=body.model_id,
+            temperature=body.temperature,
+            max_tokens=body.max_tokens,
+        )
+        db.add(config)
+    await db.commit()
+    return {"task": body.task, "model_id": body.model_id}
+
+
+@router.get("/admin/models")
+async def get_model_configs(
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(ModelConfig))
+    configs = result.scalars().all()
+    return [
+        {"task": c.task, "model_id": c.model_id, "temperature": c.temperature, "max_tokens": c.max_tokens}
+        for c in configs
+    ]
+
+
+@router.put("/admin/relationship")
+async def update_relationship(
+    body: RelationshipUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    score = max(-10, min(10, body.score))
+    for agent_id, other_id in [(body.agent_a, body.agent_b), (body.agent_b, body.agent_a)]:
+        result = await db.execute(
+            select(VillageAgent).where(VillageAgent.agent_id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+        if agent:
+            scores = agent.relationship_scores
+            scores[other_id] = score
+            agent.relationship_scores = scores
+    await db.commit()
+    return {"agent_a": body.agent_a, "agent_b": body.agent_b, "score": score}
+
+
+@router.get("/admin/log")
+async def get_admin_log(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    """Return recent event log entries (used to monitor LLM activity)."""
+    result = await db.execute(
+        select(EventLog).order_by(EventLog.created_at.desc()).limit(limit)
+    )
+    events = result.scalars().all()
+    return [
+        {
+            "id": e.id,
+            "tick": e.tick,
+            "game_day": e.game_day,
+            "game_hour": e.game_hour,
+            "event_type": e.event_type,
+            "description": e.description,
+        }
+        for e in events
+    ]
+
+
+# ---------------------------------------------------------------------------
+# AgentManager fetch helper
+# ---------------------------------------------------------------------------
+
+async def _fetch_agent_info(agent_id: str) -> dict:
+    """
+    Fetch agent profile from AgentManager.
+    Tries the configured AIGATEWAY_URL base, then falls back to localhost:8003.
+    """
+    urls_to_try = [
+        f"http://localhost:8003/agents/{agent_id}",
+        f"{settings.aigateway_url.rstrip('/')}/agents/{agent_id}",
+    ]
+    for url in urls_to_try:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {settings.aigateway_token}"},
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+        except Exception as exc:
+            logger.debug("AgentManager fetch failed at %s: %s", url, exc)
+
+    logger.warning("Could not fetch agent info for %s — using defaults.", agent_id)
+    return {"name": agent_id, "personality_summary": "", "description": ""}
