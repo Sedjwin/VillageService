@@ -29,6 +29,15 @@ async def init_db():
     import app.models  # noqa: F401 — ensure models are registered
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Additive column migrations (safe to re-run — duplicate column errors are ignored)
+        migrations = [
+            "ALTER TABLE world_state ADD COLUMN game_hour_accum REAL DEFAULT 0.0",
+        ]
+        for sql in migrations:
+            try:
+                await conn.execute(__import__("sqlalchemy").text(sql))
+            except Exception:
+                pass  # column already exists
     logger.info("Database initialised.")
 
 

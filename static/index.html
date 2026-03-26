@@ -1,0 +1,1717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Village — chip.iampc.uk</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23030712'/><rect x='5' y='18' width='22' height='11' rx='1' fill='%234a7c3f'/><polygon points='16,4 27,18 5,18' fill='%23f97316'/><circle cx='23' cy='10' r='3' fill='%23fbbf24'/></svg>"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #030712; color: #d1d5db; font-family: ui-monospace, 'Cascadia Code', monospace; font-size: 13px; overflow: hidden; }
+
+    /* Layout */
+    #app    { display: flex; flex-direction: column; height: 100vh; }
+    header  { flex-shrink: 0; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: #111827; border-bottom: 1px solid #1f2937; }
+    #body   { flex: 1; display: flex; overflow: hidden; }
+    #canvas-wrap { flex: 1; position: relative; overflow: hidden; background: #030712; }
+    canvas  { display: block; width: 100%; height: 100%; cursor: grab; }
+    canvas.dragging { cursor: grabbing; }
+    aside   { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; background: #111827; border-left: 1px solid #1f2937; overflow: hidden; }
+    #timeline { flex-shrink: 0; height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: #111827; border-top: 1px solid #1f2937; }
+
+    /* Header */
+    .sep    { width: 1px; height: 20px; background: #1f2937; flex-shrink: 0; }
+    .title  { font-weight: 700; font-size: 12px; letter-spacing: .05em; color: #e5e7eb; }
+    .meta   { font-size: 11px; color: #9ca3af; }
+    .tag    { font-size: 11px; font-weight: 600; }
+    .tag.spring { color: #4ade80; }
+    .tag.summer { color: #facc15; }
+    .tag.autumn { color: #f97316; }
+    .tag.winter { color: #93c5fd; }
+    .dot-live { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; }
+    .dot-hist { width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; }
+    .spacer { flex: 1; }
+
+    /* Zoom controls */
+    #zoom-ctrl { position: absolute; bottom: 12px; right: 12px; display: flex; flex-direction: column; gap: 4px; }
+    #zoom-ctrl button { width: 28px; height: 28px; background: rgba(17,24,39,.9); border: 1px solid #374151; border-radius: 4px; color: #9ca3af; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    #zoom-ctrl button:hover { color: #fff; background: #1f2937; }
+    #zoom-pct { position: absolute; bottom: 12px; left: 12px; font-size: 11px; color: #374151; background: rgba(3,7,18,.6); padding: 1px 5px; border-radius: 3px; }
+
+    /* Sidebar */
+    .section-hdr { padding: 6px 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: #6b7280; border-bottom: 1px solid #1f2937; flex-shrink: 0; }
+    #agent-list { overflow-y: auto; max-height: 160px; padding: 4px 6px; }
+    .agent-row { display: flex; align-items: center; gap: 7px; padding: 5px 6px; border-radius: 4px; cursor: pointer; }
+    .agent-row:hover { background: #1f2937; }
+    .agent-row.selected { background: #1f2937; outline: 1px solid #374151; }
+    .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .agent-name { flex: 1; color: #d1d5db; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .state-tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+    .st-sleeping   { background: rgba(30,58,138,.4); color: #93c5fd; }
+    .st-traveling  { background: rgba(76,29,149,.4); color: #c4b5fd; }
+    .st-working    { background: rgba(120,53,15,.4); color: #fbbf24; }
+    .st-socializing { background: rgba(5,46,22,.4); color: #4ade80; }
+    .st-idle, .st-default { background: #1f2937; color: #6b7280; }
+
+    /* Inspector */
+    #inspector { flex-shrink: 0; overflow-y: auto; max-height: 38%; border-bottom: 1px solid #1f2937; padding: 8px 10px; }
+    #inspector .placeholder { color: #374151; font-size: 11px; text-align: center; padding: 12px 0; }
+    #inspector .insp-title  { font-size: 12px; font-weight: 600; color: #e5e7eb; margin-bottom: 6px; }
+    #inspector .insp-row    { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+    #inspector .insp-label  { font-size: 10px; text-transform: uppercase; color: #4b5563; letter-spacing: .06em; }
+    #inspector .insp-val    { font-size: 11px; color: #9ca3af; }
+    #inspector .insp-goal   { font-size: 11px; color: #9ca3af; background: rgba(31,41,55,.5); border-radius: 3px; padding: 4px 6px; line-height: 1.4; }
+    .bar-wrap { display: flex; align-items: center; gap: 5px; margin-bottom: 2px; }
+    .bar-wrap .bl { font-size: 10px; color: #4b5563; width: 44px; }
+    .bar-track { flex: 1; height: 4px; background: #1f2937; border-radius: 2px; overflow: hidden; }
+    .bar-fill  { height: 100%; border-radius: 2px; transition: width .3s; }
+    .inv-tags  { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+    .inv-tag   { font-size: 10px; background: #1f2937; color: #9ca3af; padding: 1px 5px; border-radius: 3px; }
+
+    /* Event log */
+    #event-log { flex: 1; overflow-y: auto; padding: 4px 6px; }
+    .ev-row  { font-size: 10px; color: #6b7280; padding: 3px 2px; border-bottom: 1px solid rgba(31,41,55,.5); line-height: 1.4; }
+    .ev-time { color: #374151; }
+    .ev-speak  { color: #4ade80; }
+    .ev-craft  { color: #fbbf24; }
+    .ev-build  { color: #f97316; }
+    .ev-gather { color: #34d399; }
+    .ev-movement { color: #60a5fa; }
+    .ev-need   { color: #f87171; }
+    .ev-other  { color: #9ca3af; }
+
+    /* Timeline */
+    #timeline button { background: none; border: none; cursor: pointer; color: #6b7280; padding: 3px; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
+    #timeline button:hover:not(:disabled) { background: #1f2937; color: #d1d5db; }
+    #timeline button:disabled { opacity: .3; cursor: not-allowed; }
+    #scrubber-wrap { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+    #scrubber-label { font-size: 10px; color: #374151; flex-shrink: 0; }
+    #scrubber { flex: 1; accent-color: #f59e0b; cursor: pointer; height: 3px; }
+    .live-btn { display: flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; border: none; cursor: pointer; }
+    .live-btn.live  { background: rgba(5,46,22,.4); color: #4ade80; border: 1px solid rgba(5,46,22,.8); cursor: default; }
+    .live-btn.hist  { background: rgba(120,53,15,.4); color: #f59e0b; border: 1px solid rgba(120,53,15,.8); }
+    .live-btn.hist:hover { background: rgba(120,53,15,.6); }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 2px; }
+
+    /* Auth / Admin */
+    .hdr-btn { background:none; border:1px solid #374151; cursor:pointer; color:#9ca3af; padding:2px 9px; border-radius:3px; font-size:11px; font-family:inherit; display:flex; align-items:center; gap:4px; }
+    .hdr-btn:hover { background:#1f2937; color:#d1d5db; }
+    .hdr-btn.active { border-color:#3b82f6; color:#60a5fa; background:rgba(59,130,246,.1); }
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:50; display:flex; align-items:center; justify-content:center; }
+    .modal { background:#111827; border:1px solid #1f2937; border-radius:8px; padding:20px; width:280px; display:flex; flex-direction:column; gap:10px; }
+    .modal h2 { font-size:13px; font-weight:700; color:#e5e7eb; }
+    .modal input { background:#030712; border:1px solid #374151; border-radius:4px; padding:7px 10px; font-size:12px; color:#d1d5db; font-family:inherit; width:100%; }
+    .modal input:focus { outline:none; border-color:#3b82f6; }
+    .modal .mbtn { background:#1d4ed8; border:none; border-radius:4px; padding:8px; color:#fff; font-size:12px; cursor:pointer; font-family:inherit; width:100%; font-weight:600; }
+    .modal .mbtn:hover { background:#2563eb; }
+    .modal .merr { color:#f87171; font-size:11px; min-height:14px; }
+    #admin-panel { position:fixed; top:40px; right:0; width:280px; height:calc(100vh - 40px); background:#0d1117; border-left:1px solid #1f2937; display:none; flex-direction:column; z-index:40; overflow-y:auto; }
+    #admin-panel.open { display:flex; }
+    .adm-sec { padding:10px 12px; border-bottom:1px solid #1f2937; }
+    .adm-sec h3 { font-size:10px; text-transform:uppercase; letter-spacing:.07em; color:#4b5563; font-weight:700; margin-bottom:8px; }
+    .adm-row { display:flex; gap:5px; flex-wrap:wrap; }
+    .adm-btn { border:none; border-radius:4px; padding:5px 10px; font-size:11px; cursor:pointer; color:#fff; font-family:inherit; }
+    .adm-btn.green  { background:#15803d; } .adm-btn.green:hover  { background:#16a34a; }
+    .adm-btn.yellow { background:#a16207; } .adm-btn.yellow:hover { background:#b45309; }
+    .adm-btn.red    { background:#7f1d1d; } .adm-btn.red:hover    { background:#991b1b; }
+    .adm-btn.blue   { background:#1d4ed8; } .adm-btn.blue:hover   { background:#2563eb; }
+    .adm-btn.gray   { background:#374151; } .adm-btn.gray:hover   { background:#4b5563; }
+    .adm-msg { font-size:11px; color:#9ca3af; margin-top:5px; min-height:14px; }
+    .adm-msg.ok  { color:#4ade80; }
+    .adm-msg.err { color:#f87171; }
+    .adm-srow { display:flex; align-items:center; gap:8px; margin:6px 0; }
+    .adm-srow label { font-size:10px; color:#6b7280; width:52px; flex-shrink:0; }
+    .adm-srow input[type=range] { flex:1; accent-color:#3b82f6; }
+    .adm-srow span { font-size:10px; color:#9ca3af; width:30px; text-align:right; font-family:monospace; }
+    .adm-agent { display:flex; align-items:center; gap:6px; padding:4px 0; border-bottom:1px solid rgba(31,41,55,.4); }
+    .adm-aname { flex:1; font-size:11px; color:#9ca3af; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .adm-abtn { border-radius:3px; padding:2px 8px; font-size:10px; cursor:pointer; border:none; font-family:inherit; }
+    .adm-abtn.add  { background:rgba(5,46,22,.6); color:#4ade80; border:1px solid rgba(5,46,22,.8); }
+    .adm-abtn.rem  { background:rgba(127,29,29,.4); color:#f87171; border:1px solid rgba(127,29,29,.8); }
+    .adm-abtn.pend { background:rgba(120,53,15,.4); color:#f59e0b; border:1px solid rgba(120,53,15,.8); }
+
+    /* Admin inputs */
+    .adm-input  { background:#030712; border:1px solid #374151; border-radius:3px; padding:3px 7px; font-size:11px; color:#d1d5db; font-family:inherit; }
+    .adm-input:focus  { outline:none; border-color:#3b82f6; }
+    .adm-select { background:#030712; border:1px solid #374151; border-radius:3px; padding:3px 6px; font-size:11px; color:#d1d5db; font-family:inherit; }
+    .adm-lbl { font-size:10px; color:#4b5563; margin-bottom:3px; }
+    .adm-god { padding:5px 0 5px 12px; border-bottom:1px solid rgba(31,41,55,.4); display:none; }
+    .adm-god.open { display:block; }
+    .adm-grow { display:flex; align-items:center; gap:4px; margin-bottom:5px; flex-wrap:wrap; }
+    .adm-grow label { font-size:10px; color:#4b5563; width:44px; flex-shrink:0; }
+    .adm-grow input { width:60px; }
+    .adm-grow input.wide { width:120px; }
+    .adm-toggle { background:none; border:none; cursor:pointer; color:#4b5563; font-size:12px; padding:0 3px; line-height:1; }
+    .adm-toggle:hover { color:#9ca3af; }
+
+    /* Loading overlay */
+    #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(3,7,18,.8); z-index: 10; flex-direction: column; gap: 10px; color: #6b7280; font-size: 12px; }
+    .spinner { width: 28px; height: 28px; border: 2px solid #1f2937; border-top-color: #6b7280; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div id="app">
+
+<!-- Login Modal -->
+<div class="modal-overlay" id="login-modal" style="display:none" onclick="if(event.target===this)toggleLoginModal()">
+  <div class="modal">
+    <h2>Admin Login</h2>
+    <input type="text" id="login-user" placeholder="Username" autocomplete="username" />
+    <input type="password" id="login-pass" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
+    <div class="merr" id="login-err"></div>
+    <button class="mbtn" onclick="doLogin()">Sign in</button>
+  </div>
+</div>
+
+<!-- Admin Panel -->
+<div id="admin-panel">
+
+  <!-- ENGINE -->
+  <div class="adm-sec">
+    <h3>Engine</h3>
+    <div class="adm-row">
+      <button class="adm-btn green" onclick="engineAction('start')">▶ Play</button>
+      <button class="adm-btn yellow" onclick="engineAction('pause')">⏸ Pause</button>
+      <button class="adm-btn red" onclick="engineAction('stop')">■ Stop</button>
+      <button class="adm-btn blue" onclick="engineAction('step')">→ Step</button>
+    </div>
+    <div class="adm-srow" style="margin-top:8px">
+      <label>Tick rate</label>
+      <input type="range" id="adm-tick-rate" min="5" max="300" step="5" value="60"
+             oninput="document.getElementById('adm-tick-val').textContent=this.value+'s'" />
+      <span id="adm-tick-val">60s</span>
+    </div>
+    <div class="adm-srow">
+      <label>Game speed</label>
+      <select id="adm-hours-tick" style="flex:1;background:#1f2937;color:#d1d5db;border:1px solid #374151;border-radius:4px;padding:2px 6px;font-size:12px">
+        <option value="0.25">¼ hr/tick — 4 ticks per hour (slow day)</option>
+        <option value="0.5">½ hr/tick — 2 ticks per hour</option>
+        <option value="1" selected>1 hr/tick — default</option>
+        <option value="2">2 hrs/tick</option>
+        <option value="3">3 hrs/tick</option>
+        <option value="4">4 hrs/tick — fast day</option>
+      </select>
+    </div>
+    <button class="adm-btn gray" style="margin-top:6px;width:100%" onclick="saveEngineConfig()">Save</button>
+    <div class="adm-msg" id="adm-eng-msg"></div>
+  </div>
+
+  <!-- AGENTS -->
+  <div class="adm-sec">
+    <h3>Agents <span id="adm-agent-count" style="color:#4b5563"></span></h3>
+    <div id="adm-agent-list"><div style="color:#374151;font-size:11px;padding:4px 0">Loading…</div></div>
+  </div>
+
+  <!-- WORLD -->
+  <div class="adm-sec">
+    <h3>World</h3>
+    <div class="adm-lbl">Season</div>
+    <div class="adm-row" style="margin-bottom:8px">
+      <button class="adm-btn gray" onclick="setSeason('spring')">Spring</button>
+      <button class="adm-btn gray" onclick="setSeason('summer')">Summer</button>
+      <button class="adm-btn gray" onclick="setSeason('autumn')">Autumn</button>
+      <button class="adm-btn gray" onclick="setSeason('winter')">Winter</button>
+    </div>
+    <div class="adm-lbl">Weather</div>
+    <div class="adm-row" style="margin-bottom:8px">
+      <button class="adm-btn gray" onclick="setWeather('clear')">Clear</button>
+      <button class="adm-btn gray" onclick="setWeather('cloudy')">Cloudy</button>
+      <button class="adm-btn gray" onclick="setWeather('rainy')">Rain</button>
+      <button class="adm-btn gray" onclick="setWeather('stormy')">Storm</button>
+      <button class="adm-btn gray" onclick="setWeather('snowy')">Snow</button>
+    </div>
+    <div class="adm-lbl">Inject Event</div>
+    <div class="adm-grow" style="margin-bottom:8px">
+      <select id="adm-event-type" class="adm-select">
+        <option>storm</option><option>boon</option><option>blight</option>
+        <option>wanderer</option><option>beast</option><option>discovery</option><option>disaster</option>
+      </select>
+      <input type="number" id="adm-ev-x" class="adm-input" placeholder="X" style="width:44px">
+      <input type="number" id="adm-ev-y" class="adm-input" placeholder="Y" style="width:44px">
+      <button class="adm-btn red" onclick="fireEvent()">Fire</button>
+    </div>
+    <div class="adm-lbl">Drop Item</div>
+    <div class="adm-grow">
+      <input type="text" id="adm-drop-item" class="adm-input wide" placeholder="item name">
+      <input type="number" id="adm-drop-qty" class="adm-input" value="1" style="width:36px">
+      <input type="number" id="adm-drop-x" class="adm-input" placeholder="X" style="width:44px">
+      <input type="number" id="adm-drop-y" class="adm-input" placeholder="Y" style="width:44px">
+      <button class="adm-btn yellow" onclick="dropItem()">Drop</button>
+    </div>
+    <div class="adm-msg" id="adm-world-msg"></div>
+  </div>
+
+  <!-- SIMULATION TUNING -->
+  <div class="adm-sec">
+    <h3>Simulation Tuning</h3>
+    <div class="adm-lbl" style="margin-bottom:6px">Needs decay rate (×base)</div>
+    <div class="adm-srow">
+      <label>Hunger</label>
+      <input type="range" id="sc-hunger-decay" min="0" max="5" step="0.1" value="1.0"
+             oninput="document.getElementById('sc-hunger-decay-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
+      <span id="sc-hunger-decay-v">1.0×</span>
+    </div>
+    <div class="adm-srow">
+      <label>Rest</label>
+      <input type="range" id="sc-rest-decay" min="0" max="5" step="0.1" value="1.0"
+             oninput="document.getElementById('sc-rest-decay-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
+      <span id="sc-rest-decay-v">1.0×</span>
+    </div>
+    <div class="adm-srow">
+      <label>Warmth</label>
+      <input type="range" id="sc-warmth-decay" min="0" max="5" step="0.1" value="1.0"
+             oninput="document.getElementById('sc-warmth-decay-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
+      <span id="sc-warmth-decay-v">1.0×</span>
+    </div>
+    <div class="adm-srow">
+      <label>Social</label>
+      <input type="range" id="sc-social-decay" min="0" max="5" step="0.1" value="1.0"
+             oninput="document.getElementById('sc-social-decay-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
+      <span id="sc-social-decay-v">1.0×</span>
+    </div>
+    <div class="adm-lbl" style="margin:8px 0 6px">Food satisfaction (×base)</div>
+    <div class="adm-srow">
+      <label>Cooked</label>
+      <input type="range" id="sc-cooked-restore" min="0.1" max="5" step="0.1" value="1.0"
+             oninput="document.getElementById('sc-cooked-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
+      <span id="sc-cooked-v">1.0×</span>
+    </div>
+    <div class="adm-srow">
+      <label>Raw</label>
+      <input type="range" id="sc-raw-restore" min="0.1" max="5" step="0.1" value="1.0"
+             oninput="document.getElementById('sc-raw-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
+      <span id="sc-raw-v">1.0×</span>
+    </div>
+    <div class="adm-lbl" style="margin:8px 0 6px">World events frequency (×base 8%)</div>
+    <div class="adm-srow">
+      <label>Events</label>
+      <input type="range" id="sc-event-chance" min="0" max="5" step="0.1" value="1.0"
+             oninput="document.getElementById('sc-event-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
+      <span id="sc-event-v">1.0×</span>
+    </div>
+    <button class="adm-btn blue" style="margin-top:8px;width:100%" onclick="saveSimConfig()">Save tuning</button>
+    <div class="adm-msg" id="adm-sim-msg"></div>
+  </div>
+
+  <!-- AGENT NEEDS (direct edit) -->
+  <div class="adm-sec">
+    <h3>Agent Needs Override</h3>
+    <div class="adm-lbl" style="margin-bottom:6px">Select agent then set values (0=full, 100=critical)</div>
+    <div class="adm-grow" style="margin-bottom:6px">
+      <select id="adm-needs-agent" class="adm-select" style="flex:1"></select>
+    </div>
+    <div class="adm-srow">
+      <label>Hunger</label>
+      <input type="range" id="adm-need-hunger" min="0" max="100" step="1" value="30"
+             oninput="document.getElementById('adm-need-hunger-v').textContent=this.value+'%'" />
+      <span id="adm-need-hunger-v">30%</span>
+    </div>
+    <div class="adm-srow">
+      <label>Rest</label>
+      <input type="range" id="adm-need-rest" min="0" max="100" step="1" value="20"
+             oninput="document.getElementById('adm-need-rest-v').textContent=this.value+'%'" />
+      <span id="adm-need-rest-v">20%</span>
+    </div>
+    <div class="adm-srow">
+      <label>Warmth</label>
+      <input type="range" id="adm-need-warmth" min="0" max="100" step="1" value="20"
+             oninput="document.getElementById('adm-need-warmth-v').textContent=this.value+'%'" />
+      <span id="adm-need-warmth-v">20%</span>
+    </div>
+    <div class="adm-srow">
+      <label>Social</label>
+      <input type="range" id="adm-need-social" min="0" max="100" step="1" value="40"
+             oninput="document.getElementById('adm-need-social-v').textContent=this.value+'%'" />
+      <span id="adm-need-social-v">40%</span>
+    </div>
+    <button class="adm-btn yellow" style="margin-top:6px;width:100%" onclick="setAgentNeeds()">Apply</button>
+    <div class="adm-msg" id="adm-needs-msg"></div>
+  </div>
+
+  <!-- MODELS & GATEWAY -->
+  <div class="adm-sec">
+    <h3>Models &amp; Gateway</h3>
+
+    <div class="adm-lbl" style="margin-bottom:3px">Access Token</div>
+    <div class="adm-grow" style="margin-bottom:3px">
+      <input type="password" id="gw-token" class="adm-input wide" placeholder="new token (leave blank to keep)" style="flex:1">
+      <button class="adm-abtn gray" style="padding:2px 6px;font-size:11px" onclick="toggleTokenVis()" title="Show/hide">👁</button>
+    </div>
+    <div style="color:#4b5563;font-size:10px;margin-bottom:5px" id="gw-token-hint">Loading…</div>
+    <button class="adm-btn blue" style="width:100%;margin-bottom:12px" onclick="saveGatewayConfig()">Update Token</button>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <span class="adm-lbl" style="margin:0">Task Models</span>
+      <button class="adm-abtn gray" style="font-size:10px;padding:2px 7px" onclick="loadModelsConfig()">↺ Refresh</button>
+    </div>
+    <div id="adm-models-list"><div style="color:#374151;font-size:11px">Loading…</div></div>
+    <div class="adm-msg" id="adm-models-msg"></div>
+  </div>
+
+  <div class="adm-sec">
+    <button class="adm-btn gray" onclick="logout()" style="width:100%">Logout</button>
+  </div>
+</div>
+
+  <!-- Header -->
+  <header>
+    <span class="title">Village</span>
+    <div class="sep"></div>
+    <span class="meta" id="hdr-time">—</span>
+    <span class="tag" id="hdr-season"></span>
+    <span id="hdr-weather" style="font-size:14px">—</span>
+    <div id="hdr-dot" class="dot-live" title="Live"></div>
+    <div class="spacer"></div>
+    <span class="meta" id="hdr-tick" style="color:#4b5563"></span>
+    <div class="sep"></div>
+    <button class="hdr-btn" id="btn-login" onclick="toggleLoginModal()">Login</button>
+    <button class="hdr-btn" id="btn-admin" onclick="toggleAdminPanel()" style="display:none">⚙ Admin</button>
+  </header>
+
+  <!-- Body -->
+  <div id="body">
+
+    <!-- Canvas -->
+    <div id="canvas-wrap">
+      <div id="loading"><div class="spinner"></div>Loading world…</div>
+      <canvas id="canvas"></canvas>
+      <div id="zoom-pct">150%</div>
+      <div id="zoom-ctrl">
+        <button id="zoom-in">+</button>
+        <button id="zoom-out">−</button>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <aside>
+      <div class="section-hdr">Agents <span id="agent-count" style="color:#374151"></span></div>
+      <div id="agent-list"></div>
+
+      <div id="inspector"><div class="placeholder">Click a tile or agent to inspect</div></div>
+
+      <div class="section-hdr">Event Log</div>
+      <div id="event-log"></div>
+    </aside>
+  </div>
+
+  <!-- Timeline -->
+  <div id="timeline">
+    <button id="btn-prev" disabled title="Previous tick">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+
+    <div id="scrubber-wrap">
+      <span id="scrubber-min" class="scrubber-label" style="display:none"></span>
+      <input type="range" id="scrubber" style="display:none" />
+      <span id="scrubber-max" class="scrubber-label" style="display:none"></span>
+      <span id="scrubber-empty" style="font-size:10px;color:#374151;flex:1;text-align:center">No history yet — snapshots begin next tick</span>
+    </div>
+
+    <button id="btn-next" disabled title="Next tick">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+
+    <svg id="tick-clock" width="20" height="20" viewBox="0 0 20 20" style="flex-shrink:0;opacity:0.2" title="Tick countdown">
+      <circle cx="10" cy="10" r="8" fill="none" stroke="#374151" stroke-width="1.5"/>
+      <path id="tick-arc" fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" d=""/>
+      <line id="tick-hand" x1="10" y1="10" x2="10" y2="4" stroke="#6b7280" stroke-width="1" stroke-linecap="round"/>
+    </svg>
+
+    <button class="live-btn live" id="btn-live">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+      Live
+    </button>
+  </div>
+</div>
+
+<script>
+// ── State ───────────────────────────────────────────────────────────────────
+let liveTiles     = {}
+let liveAgents    = []
+let liveCreatures = []
+let liveWorld     = null
+let liveEvents    = []
+
+let historyMode  = false
+let viewingTick  = null
+let historyRange = { min: null, max: null }
+let historySnap  = null
+
+let selectedAgent = null
+let selectedTile  = null
+
+let camera = { x: 0, y: 0, zoom: 1.5 }
+let drag = null, touch = null
+let authToken = null
+
+// ── Canvas ──────────────────────────────────────────────────────────────────
+const canvas  = document.getElementById('canvas')
+const ctx     = canvas.getContext('2d')
+let rafId     = null
+
+function resizeCanvas() {
+  const wrap = document.getElementById('canvas-wrap')
+  canvas.width  = wrap.clientWidth
+  canvas.height = wrap.clientHeight
+}
+window.addEventListener('resize', resizeCanvas)
+resizeCanvas()
+
+// ── Terrain drawing ─────────────────────────────────────────────────────────
+const TERRAIN = {
+  grass:        { fill: '#4a7c3f', draw(px,py,ts){ fillRect(px,py,ts,'#4a7c3f'); dots(px,py,ts,'#3d6b34',4) } },
+  light_forest: { fill: '#2d5a27', draw(px,py,ts){ fillRect(px,py,ts,'#2d5a27'); blob(px+ts/2,py+ts/2-4,6,'#1e3d1a') } },
+  dense_forest: { fill: '#1a3d16', draw(px,py,ts){ fillRect(px,py,ts,'#1a3d16'); [[-6,-6],[6,-4],[-4,6],[5,5],[0,0]].forEach(([ox,oy])=>blob(px+ts/2+ox,py+ts/2+oy,4,'#122a10')) } },
+  hills:        { fill: '#8a7a55', draw(px,py,ts){ fillRect(px,py,ts,'#8a7a55'); ctx.fillStyle='#7a6a45';ctx.beginPath();ctx.arc(px+ts/2,py+ts,ts*.6,Math.PI,0);ctx.fill() } },
+  mountain:     { fill: '#6a6055', draw(px,py,ts){ fillRect(px,py,ts,'#6a6055'); tri(px+ts/2,py+2,px+ts-2,py+ts,px+2,py+ts,'#9a9080'); tri(px+ts/2,py+2,px+ts/2+6,py+10,px+ts/2-6,py+10,'#e8e8e8') } },
+  water:        { fill: '#2a5f9e', draw(px,py,ts){ fillRect(px,py,ts,'#2a5f9e'); shimmer(px,py,ts) } },
+  beach:        { fill: '#d4c070', draw(px,py,ts){ fillRect(px,py,ts,'#d4c070'); dots(px,py,ts,'#c4b060',3) } },
+  cave:         { fill: '#1a1a1a', draw(px,py,ts){ fillRect(px,py,ts,'#1a1a1a'); stalactites(px,py,ts) } },
+  road:         { fill: '#c4a882', draw(px,py,ts){ fillRect(px,py,ts,'#c4a882'); ctx.strokeStyle='#a89060';ctx.lineWidth=1;ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(px+ts/2,py);ctx.lineTo(px+ts/2,py+ts);ctx.stroke();ctx.setLineDash([]) } },
+  dirt:         { fill: '#7a5c3a', draw(px,py,ts){ fillRect(px,py,ts,'#7a5c3a'); dots(px,py,ts,'#6a4c2a',3) } },
+}
+function fillRect(px,py,ts,c){ ctx.fillStyle=c; ctx.fillRect(px,py,ts,ts) }
+function blob(cx,cy,r,c){ ctx.fillStyle=c; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill() }
+function tri(x1,y1,x2,y2,x3,y3,c){ ctx.fillStyle=c; ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.lineTo(x3,y3); ctx.closePath(); ctx.fill() }
+function dots(px,py,ts,c,n){ ctx.fillStyle=c; for(let i=0;i<n;i++){ const dx=((px*7+i*13)%ts), dy=((py*11+i*7)%ts); ctx.fillRect(px+dx,py+dy,2,2) } }
+function shimmer(px,py,ts){ ctx.fillStyle='rgba(58,112,174,.6)'; const t=Date.now()/1000; for(let i=0;i<3;i++){ const y=py+((t*20+i*10)%ts); ctx.fillRect(px+2,y,ts-4,1) } }
+function stalactites(px,py,ts){ ctx.fillStyle='#2a2a2a'; for(let i=0;i<3;i++){ const x=px+(i+1)*ts/4; ctx.beginPath(); ctx.moveTo(x,py); ctx.lineTo(x-4,py+8); ctx.lineTo(x+4,py+8); ctx.closePath(); ctx.fill() } }
+
+// Feature icons
+function drawFeature(feat, cx, cy, ts) {
+  const s = ts * .28
+  ctx.save()
+  ctx.translate(cx, cy)
+  switch(feat) {
+    case 'campfire':
+      ctx.fillStyle='#f97316'; ctx.beginPath(); ctx.arc(0,0,s,0,Math.PI*2); ctx.fill()
+      ctx.fillStyle='#fbbf24'; ctx.beginPath(); ctx.arc(0,-s*.4,s*.5,0,Math.PI*2); ctx.fill()
+      break
+    case 'notice_board':
+      ctx.fillStyle='#92400e'; ctx.fillRect(-s,-s*.8,s*2,s*1.6)
+      ctx.fillStyle='#fef3c7'; ctx.fillRect(-s*.7,-s*.5,s*1.4,s*1)
+      break
+    case 'well':
+      ctx.strokeStyle='#78350f'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,s,0,Math.PI*2); ctx.stroke()
+      ctx.strokeStyle='#6b7280'; ctx.beginPath(); ctx.moveTo(-s,0); ctx.lineTo(s,0); ctx.stroke()
+      break
+    case 'starter_crate':
+      ctx.fillStyle='#92400e'; ctx.fillRect(-s,-s*.6,s*2,s*1.2)
+      ctx.strokeStyle='#78350f'; ctx.lineWidth=1.5
+      ctx.strokeRect(-s,-s*.6,s*2,s*1.2)
+      ctx.beginPath(); ctx.moveTo(-s,0); ctx.lineTo(s,0); ctx.stroke()
+      break
+  }
+  ctx.restore()
+}
+
+// ── Agent sprite ────────────────────────────────────────────────────────────
+const _TILE_LAYOUTS = [
+  { offsets: [[0,0]],                            scale: 1.00 },
+  { offsets: [[-5,1],[5,1]],                     scale: 0.72 },
+  { offsets: [[0,-5],[-6,5],[6,5]],              scale: 0.63 },
+  { offsets: [[-6,-4],[6,-4],[-6,5],[6,5]],      scale: 0.56 },
+]
+
+function drawAgent(agent, px, py, ts, tileCount, tileIndex) {
+  tileCount = tileCount || 1; tileIndex = tileIndex || 0
+  const layout = _TILE_LAYOUTS[Math.min(tileCount - 1, 3)]
+  const [ox, oy] = layout.offsets[tileIndex] || [0, 0]
+  const sc = layout.scale
+  const zoom = ts / 32
+  const cx = px + ts/2 + ox * sc * zoom
+  const cy = py + ts/2 + oy * sc * zoom
+  const r = ts * .28 * sc
+  const col = agent.avatar_config?.primary_color || '#4a9eff'
+  const sec = agent.avatar_config?.secondary_color || '#1e3a5f'
+  const shape = agent.avatar_config?.body_shape || 'circle'
+  const eyeStyle = agent.avatar_config?.eye_style || 'round'
+  const mood = agent.mood ?? 0.5
+  const isSelected = agent === selectedAgent || agent.agent_id === selectedAgent?.agent_id
+  const hw = r * 0.55
+
+  // Ground shadow
+  ctx.fillStyle = 'rgba(0,0,0,.25)'
+  ctx.beginPath(); ctx.ellipse(cx, cy + r*1.7, r*.7, r*.22, 0, 0, Math.PI*2); ctx.fill()
+
+  // Selection glow
+  if (isSelected) {
+    ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.ellipse(cx, cy + r*.5, r*1.1, r*1.8, 0, 0, Math.PI*2); ctx.stroke()
+  }
+  // State ring
+  if (agent.state === 'sleeping' || agent.state === 'socializing') {
+    ctx.strokeStyle = agent.state === 'sleeping' ? '#93c5fd' : '#4ade80'; ctx.lineWidth = 1.5
+    ctx.beginPath(); ctx.ellipse(cx, cy + r*.5, r*1.0, r*1.7, 0, 0, Math.PI*2); ctx.stroke()
+  }
+
+  if (shape === 'square') {
+    // Boxy/mechanical
+    ctx.fillStyle = sec
+    ctx.fillRect(cx - hw*.6, cy + r*.7, hw*.5, r*.8); ctx.fillRect(cx + hw*.1, cy + r*.7, hw*.5, r*.8)
+    ctx.fillRect(cx - hw*1.2, cy - r*.2, hw*.5, r*.9); ctx.fillRect(cx + hw*.7, cy - r*.2, hw*.5, r*.9)
+    ctx.fillStyle = col
+    ctx.fillRect(cx - hw, cy - r*.3, hw*2, r*1.1)
+    ctx.fillRect(cx - hw*.8, cy - r*1.35, hw*1.6, hw*1.6)
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(cx - hw*.55, cy - r*1.1, hw*.4, hw*.35); ctx.fillRect(cx + hw*.15, cy - r*1.1, hw*.4, hw*.35)
+    ctx.fillStyle = '#1e293b'
+    if (eyeStyle === 'round') {
+      ctx.fillRect(cx - hw*.45, cy - r*1.05, hw*.2, hw*.2); ctx.fillRect(cx + hw*.25, cy - r*1.05, hw*.2, hw*.2)
+    } else {
+      ctx.fillRect(cx - hw*.55, cy - r*1.1, hw*.4, hw*.12); ctx.fillRect(cx + hw*.15, cy - r*1.1, hw*.4, hw*.12)
+    }
+    ctx.fillStyle = mood > 0.6 ? '#4ade80' : mood < 0.3 ? '#f87171' : '#6b7280'
+    ctx.fillRect(cx - hw*.4, cy - r*.72, hw*.8, hw*.12)
+
+  } else if (shape === 'tall_rectangle') {
+    // Slender
+    const tw = hw * 0.7
+    ctx.fillStyle = sec
+    ctx.fillRect(cx - tw*.6, cy + r*.6, tw*.45, r*1.0); ctx.fillRect(cx + tw*.15, cy + r*.6, tw*.45, r*1.0)
+    ctx.fillRect(cx - tw*1.35, cy - r*.1, tw*.4, r*1.0); ctx.fillRect(cx + tw*.95, cy - r*.1, tw*.4, r*1.0)
+    ctx.fillStyle = col
+    ctx.fillRect(cx - tw, cy - r*.45, tw*2, r*1.15)
+    ctx.beginPath(); ctx.ellipse(cx, cy - r*1.1, tw*.7, tw*.85, 0, 0, Math.PI*2); ctx.fill()
+    const ey = cy - r*1.15
+    ctx.fillStyle = '#fff'
+    ctx.beginPath(); ctx.arc(cx - tw*.3, ey, tw*.2, 0, Math.PI*2); ctx.fill()
+    ctx.beginPath(); ctx.arc(cx + tw*.3, ey, tw*.2, 0, Math.PI*2); ctx.fill()
+    ctx.fillStyle = '#1e293b'
+    if (eyeStyle === 'round') {
+      ctx.beginPath(); ctx.arc(cx - tw*.3, ey, tw*.1, 0, Math.PI*2); ctx.fill()
+      ctx.beginPath(); ctx.arc(cx + tw*.3, ey, tw*.1, 0, Math.PI*2); ctx.fill()
+    } else {
+      ctx.fillRect(cx - tw*.42, ey - tw*.08, tw*.24, tw*.14); ctx.fillRect(cx + tw*.18, ey - tw*.08, tw*.24, tw*.14)
+    }
+    ctx.strokeStyle = mood > 0.6 ? col : '#9ca3af'; ctx.lineWidth = 1.0; ctx.beginPath()
+    if (mood > 0.6) ctx.arc(cx, cy - r*.82, tw*.25, 0, Math.PI)
+    else if (mood < 0.3) ctx.arc(cx, cy - r*.65, tw*.25, Math.PI, 0)
+    else { ctx.moveTo(cx - tw*.25, cy - r*.73); ctx.lineTo(cx + tw*.25, cy - r*.73) }
+    ctx.stroke()
+
+  } else {
+    // Rounded humanoid (default)
+    ctx.fillStyle = sec
+    ctx.beginPath(); ctx.ellipse(cx - hw*.4, cy + r*1.5, hw*.32, r*.55, 0, 0, Math.PI*2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(cx + hw*.4, cy + r*1.5, hw*.32, r*.55, 0, 0, Math.PI*2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(cx - hw*1.1, cy + r*.1, hw*.28, r*.55, -0.3, 0, Math.PI*2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(cx + hw*1.1, cy + r*.1, hw*.28, r*.55, 0.3, 0, Math.PI*2); ctx.fill()
+    ctx.fillStyle = col
+    ctx.beginPath(); ctx.ellipse(cx, cy + r*.4, hw, r*.85, 0, 0, Math.PI*2); ctx.fill()
+    ctx.beginPath(); ctx.arc(cx, cy - r*.75, r*.75, 0, Math.PI*2); ctx.fill()
+    const ey = cy - r*.82
+    ctx.fillStyle = '#fff'
+    ctx.beginPath(); ctx.arc(cx - r*.26, ey, r*.16, 0, Math.PI*2); ctx.fill()
+    ctx.beginPath(); ctx.arc(cx + r*.26, ey, r*.16, 0, Math.PI*2); ctx.fill()
+    ctx.fillStyle = '#1e293b'
+    if (eyeStyle === 'round') {
+      ctx.beginPath(); ctx.arc(cx - r*.26, ey, r*.09, 0, Math.PI*2); ctx.fill()
+      ctx.beginPath(); ctx.arc(cx + r*.26, ey, r*.09, 0, Math.PI*2); ctx.fill()
+    } else {
+      ctx.fillRect(cx - r*.36, ey - r*.06, r*.2, r*.12); ctx.fillRect(cx + r*.16, ey - r*.06, r*.2, r*.12)
+    }
+    ctx.strokeStyle = mood > 0.6 ? col : '#9ca3af'; ctx.lineWidth = 1.2; ctx.beginPath()
+    if (mood > 0.6) ctx.arc(cx, cy - r*.54, r*.22, 0, Math.PI)
+    else if (mood < 0.3) ctx.arc(cx, cy - r*.38, r*.22, Math.PI, 0)
+    else { ctx.moveTo(cx - r*.2, cy - r*.45); ctx.lineTo(cx + r*.2, cy - r*.45) }
+    ctx.stroke()
+  }
+
+  // Name label
+  const nameY = py + ts + 11
+  ctx.font = `bold ${Math.max(7, ts*.2)}px ui-monospace,monospace`
+  ctx.textAlign = 'center'
+  ctx.fillStyle = 'rgba(3,7,18,.7)'
+  const nm = agent.name
+  const tw2 = ctx.measureText(nm).width
+  ctx.fillRect(cx - tw2/2 - 3, nameY - 9, tw2 + 6, 12)
+  ctx.fillStyle = col
+  ctx.fillText(nm, cx, nameY)
+}
+
+// ── Fog of war ──────────────────────────────────────────────────────────────
+function drawFog(px, py, ts, explored) {
+  if (!explored || explored.length === 0) {
+    ctx.fillStyle = 'rgba(0,0,0,.85)'
+    ctx.fillRect(px, py, ts, ts)
+  }
+}
+
+// ── Atmosphere ──────────────────────────────────────────────────────────────
+function getNightOpacity(hour) {
+  if (hour >= 6 && hour <= 18) return 0
+  if (hour > 18 && hour < 22) return (hour - 18) / 4 * 0.5
+  if (hour >= 22 || hour < 3) return 0.65
+  return (3 - hour) / 3 * 0.65
+}
+function getSeasonTint(season) {
+  if (season === 'winter') return 'rgba(100,150,255,0.10)'
+  if (season === 'autumn') return 'rgba(220,120,30,0.10)'
+  if (season === 'spring') return 'rgba(80,220,80,0.07)'
+  return null
+}
+function drawWeatherFx(weather, W, H) {
+  if (weather === 'rainy' || weather === 'stormy') {
+    const intensity = weather === 'stormy' ? 1.6 : 1.0
+    ctx.strokeStyle = `rgba(120,160,220,${0.35 * intensity})`; ctx.lineWidth = 1
+    const t = Date.now() / 80
+    for (let i = 0; i < 60 * intensity; i++) {
+      const x = ((i * 137 + t) % W + W) % W
+      const y = ((i * 97 + t * 2) % H + H) % H
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 3, y + 9); ctx.stroke()
+    }
+    if (weather === 'stormy') { ctx.fillStyle = 'rgba(40,60,120,0.08)'; ctx.fillRect(0, 0, W, H) }
+  } else if (weather === 'snowy') {
+    ctx.fillStyle = 'rgba(220,235,255,0.55)'
+    const t = Date.now() / 3000
+    for (let i = 0; i < 50; i++) {
+      const x = ((i * 173 + Math.sin(t + i) * 20) % W + W) % W
+      const y = ((i * 113 + t * 30) % H + H) % H
+      ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI*2); ctx.fill()
+    }
+  } else if (weather === 'fog' || weather === 'foggy') {
+    ctx.fillStyle = 'rgba(180,190,200,0.18)'; ctx.fillRect(0, 0, W, H)
+  }
+}
+
+// ── Creature sprites ─────────────────────────────────────────────────────────
+function drawCreature(c, px, py, ts) {
+  const cx = px + ts/2, cy = py + ts/2
+  const r = ts * .18
+  ctx.save(); ctx.translate(cx, cy)
+  switch (c.creature_type) {
+    case 'rabbit': {
+      ctx.fillStyle = '#d4c5a9'
+      ctx.beginPath(); ctx.ellipse(0, 2, r, r*.8, 0, 0, Math.PI*2); ctx.fill()
+      ctx.beginPath(); ctx.arc(0, -r*.7, r*.65, 0, Math.PI*2); ctx.fill()
+      ctx.fillStyle = '#c4a89a'
+      ctx.beginPath(); ctx.ellipse(-r*.35, -r*1.8, r*.2, r*.6, -0.2, 0, Math.PI*2); ctx.fill()
+      ctx.beginPath(); ctx.ellipse(r*.35, -r*1.8, r*.2, r*.6, 0.2, 0, Math.PI*2); ctx.fill()
+      ctx.fillStyle = '#f87171'
+      ctx.beginPath(); ctx.arc(r*.25, -r*.8, r*.15, 0, Math.PI*2); ctx.fill()
+      if (c.state === 'fleeing') { ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, 0, r*1.6, 0, Math.PI*2); ctx.stroke() }
+      break
+    }
+    case 'deer': {
+      ctx.fillStyle = '#b8864e'
+      ctx.beginPath(); ctx.ellipse(0, 2, r*1.2, r*.75, 0, 0, Math.PI*2); ctx.fill()
+      ctx.fillRect(-r*.7, r*.7, r*.28, r*.9); ctx.fillRect(-r*.2, r*.7, r*.28, r*.9)
+      ctx.fillRect(r*.1, r*.7, r*.28, r*.9); ctx.fillRect(r*.55, r*.7, r*.28, r*.9)
+      ctx.beginPath(); ctx.ellipse(-r*.6, -r*.7, r*.35, r*.6, -0.4, 0, Math.PI*2); ctx.fill()
+      ctx.beginPath(); ctx.arc(-r*.9, -r*1.2, r*.45, 0, Math.PI*2); ctx.fill()
+      ctx.strokeStyle = '#7a5c3a'; ctx.lineWidth = 1.5
+      ctx.beginPath(); ctx.moveTo(-r*.9, -r*1.55); ctx.lineTo(-r*1.1, -r*2.1); ctx.moveTo(-r*1.0, -r*1.85); ctx.lineTo(-r*.6, -r*2.0); ctx.stroke()
+      ctx.fillStyle = '#1e293b'; ctx.beginPath(); ctx.arc(-r*1.0, -r*1.25, r*.12, 0, Math.PI*2); ctx.fill()
+      break
+    }
+    case 'wolf': {
+      ctx.fillStyle = '#6b7280'
+      ctx.beginPath(); ctx.ellipse(0, 2, r*1.3, r*.75, 0, 0, Math.PI*2); ctx.fill()
+      ctx.fillStyle = '#4b5563'
+      ctx.fillRect(-r*.8, r*.7, r*.3, r*.8); ctx.fillRect(-r*.25, r*.7, r*.3, r*.8)
+      ctx.fillRect(r*.1, r*.7, r*.3, r*.8); ctx.fillRect(r*.6, r*.7, r*.3, r*.8)
+      ctx.fillStyle = '#6b7280'
+      ctx.beginPath(); ctx.ellipse(-r*.7, -r*.6, r*.4, r*.6, -0.3, 0, Math.PI*2); ctx.fill()
+      ctx.beginPath(); ctx.ellipse(-r*1.1, -r*1.1, r*.55, r*.45, 0, 0, Math.PI*2); ctx.fill()
+      ctx.fillStyle = '#4b5563'
+      ctx.beginPath(); ctx.moveTo(-r*1.4,-r*1.35); ctx.lineTo(-r*1.6,-r*1.75); ctx.lineTo(-r*1.15,-r*1.55); ctx.closePath(); ctx.fill()
+      ctx.beginPath(); ctx.moveTo(-r*.85,-r*1.45); ctx.lineTo(-r*.8,-r*1.8); ctx.lineTo(-r*.55,-r*1.5); ctx.closePath(); ctx.fill()
+      ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(-r*1.25,-r*1.15, r*.14, 0, Math.PI*2); ctx.fill()
+      ctx.fillStyle = '#1e293b'; ctx.beginPath(); ctx.arc(-r*1.25,-r*1.15, r*.07, 0, Math.PI*2); ctx.fill()
+      ctx.strokeStyle = '#6b7280'; ctx.lineWidth = r*.4
+      ctx.beginPath(); ctx.moveTo(r*1.2,0); ctx.quadraticCurveTo(r*1.8,-r, r*1.6,-r*1.5); ctx.stroke()
+      if (c.state === 'stalking') { ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, r*2.0, 0, Math.PI*2); ctx.stroke() }
+      break
+    }
+    case 'bird': {
+      ctx.fillStyle = '#7dd3fc'
+      if (c.state === 'fleeing') {
+        ctx.beginPath(); ctx.ellipse(0, 0, r*.5, r*.3, 0, 0, Math.PI*2); ctx.fill()
+        ctx.fillStyle = '#38bdf8'
+        ctx.beginPath(); ctx.ellipse(-r*.9,-r*.3, r*.7, r*.25, 0.3, 0, Math.PI*2); ctx.fill()
+        ctx.beginPath(); ctx.ellipse(r*.9,-r*.3, r*.7, r*.25, -0.3, 0, Math.PI*2); ctx.fill()
+      } else {
+        ctx.beginPath(); ctx.arc(0, 0, r*.6, 0, Math.PI*2); ctx.fill()
+        ctx.fillStyle = '#38bdf8'
+        ctx.beginPath(); ctx.ellipse(-r*.7, r*.2, r*.5, r*.22, 0.3, 0, Math.PI*2); ctx.fill()
+        ctx.beginPath(); ctx.ellipse(r*.7, r*.2, r*.5, r*.22, -0.3, 0, Math.PI*2); ctx.fill()
+        ctx.fillStyle = '#1e293b'; ctx.beginPath(); ctx.arc(r*.3,-r*.2, r*.15, 0, Math.PI*2); ctx.fill()
+        ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.moveTo(r*.65,0); ctx.lineTo(r*1.1,r*.1); ctx.lineTo(r*.65,r*.2); ctx.closePath(); ctx.fill()
+      }
+      break
+    }
+  }
+  ctx.restore()
+}
+
+// ── Main render ─────────────────────────────────────────────────────────────
+function render() {
+  const W = canvas.width, H = canvas.height
+  ctx.fillStyle = '#030712'
+  ctx.fillRect(0, 0, W, H)
+
+  const tiles    = liveTiles
+  const agents   = historyMode && historySnap ? historySnap.agents : liveAgents
+  const creatures = historyMode ? [] : liveCreatures
+  const TS       = 32 * camera.zoom
+
+  const x0 = Math.floor(camera.x / TS) - 1
+  const y0 = Math.floor(camera.y / TS) - 1
+  const x1 = Math.ceil((camera.x + W) / TS) + 1
+  const y1 = Math.ceil((camera.y + H) / TS) + 1
+
+  // Tiles
+  for (let tx = x0; tx <= x1; tx++) {
+    for (let ty = y0; ty <= y1; ty++) {
+      const px = Math.round(tx * TS - camera.x)
+      const py = Math.round(ty * TS - camera.y)
+      const tile = tiles[`${tx},${ty}`]
+      if (tile) {
+        const t = TERRAIN[tile.terrain] || TERRAIN.grass
+        t.draw(px, py, TS)
+        tile.features?.forEach(f => drawFeature(f, px + TS/2, py + TS/2, TS))
+        drawFog(px, py, TS, tile.explored_by)
+      } else {
+        ctx.fillStyle = '#030712'; ctx.fillRect(px, py, TS, TS)
+      }
+    }
+  }
+
+  // Creatures (below agents)
+  creatures.forEach(c => {
+    const px = Math.round(c.x * TS - camera.x)
+    const py = Math.round(c.y * TS - camera.y)
+    if (px > -TS && px < W && py > -TS && py < H) drawCreature(c, px, py, TS)
+  })
+
+  // Agents grouped by tile for stacking
+  const tileGroups = {}
+  agents.forEach(a => {
+    if (!a.in_simulation && a.in_simulation !== undefined) return
+    const key = `${a.x},${a.y}`
+    if (!tileGroups[key]) tileGroups[key] = []
+    tileGroups[key].push(a)
+  })
+  Object.values(tileGroups).forEach(group => {
+    group.forEach((a, idx) => {
+      const px = Math.round(a.x * TS - camera.x)
+      const py = Math.round(a.y * TS - camera.y)
+      if (px > -TS && px < W && py > -TS && py < H) drawAgent(a, px, py, TS, group.length, idx)
+    })
+  })
+
+  // Selected tile highlight
+  if (selectedTile) {
+    const px = Math.round(selectedTile.x * TS - camera.x)
+    const py = Math.round(selectedTile.y * TS - camera.y)
+    ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2
+    ctx.strokeRect(px+1, py+1, TS-2, TS-2)
+  }
+
+  // Atmosphere overlays
+  const ws = historyMode && historySnap ? historySnap.world_state : liveWorld
+  if (ws) {
+    const tint = getSeasonTint(ws.season)
+    if (tint) { ctx.fillStyle = tint; ctx.fillRect(0, 0, W, H) }
+    const nightOp = getNightOpacity(ws.game_hour)
+    if (nightOp > 0) { ctx.fillStyle = `rgba(0,0,30,${nightOp})`; ctx.fillRect(0, 0, W, H) }
+    if (!historyMode) drawWeatherFx(ws.weather, W, H)
+  }
+
+  rafId = requestAnimationFrame(render)
+}
+
+// ── Interaction ─────────────────────────────────────────────────────────────
+canvas.addEventListener('mousedown', e => {
+  drag = { startX: e.clientX, startY: e.clientY, camX: camera.x, camY: camera.y, moved: false }
+})
+canvas.addEventListener('mousemove', e => {
+  if (!drag) return
+  const { startX, startY, camX, camY } = drag
+  const dx = e.clientX - startX, dy = e.clientY - startY
+  if (Math.abs(dx)>3||Math.abs(dy)>3) drag.moved = true
+  camera.x = camX - dx; camera.y = camY - dy
+})
+canvas.addEventListener('mouseup', e => {
+  if (!drag) return
+  if (!drag.moved) handleClick(e.clientX, e.clientY)
+  drag = null
+})
+canvas.addEventListener('mouseleave', () => { drag = null })
+canvas.addEventListener('wheel', e => {
+  e.preventDefault()
+  const rect = canvas.getBoundingClientRect()
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top
+  const factor = e.deltaY < 0 ? 1.12 : 0.88
+  const newZoom = Math.min(4, Math.max(0.25, camera.zoom * factor))
+  const wx = (mx + camera.x) / camera.zoom, wy = (my + camera.y) / camera.zoom
+  camera.x = wx * newZoom - mx; camera.y = wy * newZoom - my; camera.zoom = newZoom
+  document.getElementById('zoom-pct').textContent = Math.round(newZoom*100)+'%'
+}, { passive: false })
+
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) {
+    touch = { type:'pan', startX:e.touches[0].clientX, startY:e.touches[0].clientY, camX:camera.x, camY:camera.y, moved:false }
+  } else if (e.touches.length === 2) {
+    const d = dist2(e.touches)
+    touch = { type:'pinch', startDist:d, startZoom:camera.zoom, camX:camera.x, camY:camera.y }
+  }
+})
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault()
+  if (!touch) return
+  if (touch.type==='pan' && e.touches.length===1) {
+    const { startX, startY, camX, camY } = touch
+    const dx=e.touches[0].clientX-startX, dy=e.touches[0].clientY-startY
+    if (Math.abs(dx)>5||Math.abs(dy)>5) touch.moved=true
+    camera.x=camX-dx; camera.y=camY-dy
+  } else if (touch.type==='pinch' && e.touches.length===2) {
+    const d=dist2(e.touches), scale=d/touch.startDist
+    camera.zoom=Math.min(4,Math.max(0.25,touch.startZoom*scale))
+  }
+}, { passive: false })
+canvas.addEventListener('touchend', e => {
+  if (touch?.type==='pan' && !touch.moved) {
+    const t=e.changedTouches[0]
+    handleClick(t.clientX, t.clientY)
+  }
+  touch = null
+})
+function dist2(touches) { return Math.hypot(touches[0].clientX-touches[1].clientX, touches[0].clientY-touches[1].clientY) }
+
+function handleClick(cx, cy) {
+  const rect = canvas.getBoundingClientRect()
+  const mx = cx - rect.left, my = cy - rect.top
+  const TS = 32 * camera.zoom
+  const tx = Math.floor((mx + camera.x) / TS)
+  const ty = Math.floor((my + camera.y) / TS)
+  const agents = historyMode && historySnap ? historySnap.agents : liveAgents
+  const clicked = agents.find(a => a.x===tx && a.y===ty)
+  if (clicked) { selectedAgent=clicked; selectedTile=null }
+  else {
+    selectedAgent=null
+    selectedTile = liveTiles[`${tx},${ty}`] || null
+  }
+  renderInspector()
+}
+
+document.getElementById('zoom-in').onclick  = () => { camera.zoom=Math.min(4,camera.zoom*1.2); document.getElementById('zoom-pct').textContent=Math.round(camera.zoom*100)+'%' }
+document.getElementById('zoom-out').onclick = () => { camera.zoom=Math.max(.25,camera.zoom/1.2); document.getElementById('zoom-pct').textContent=Math.round(camera.zoom*100)+'%' }
+
+// ── UI updates ───────────────────────────────────────────────────────────────
+function updateHeader() {
+  const ws = historyMode && historySnap ? historySnap.world_state : liveWorld
+  if (!ws) return
+  document.getElementById('hdr-time').textContent = `Day ${ws.game_day}, ${String(ws.game_hour).padStart(2,'0')}:00`
+  const sc = document.getElementById('hdr-season')
+  sc.textContent = ws.season; sc.className = `tag ${ws.season}`
+  const wmap = { clear:'☀', cloudy:'☁', rain:'🌧', storm:'⛈', snow:'❄', fog:'🌫', windy:'💨' }
+  document.getElementById('hdr-weather').textContent = wmap[ws.weather] || '—'
+  document.getElementById('hdr-tick').textContent = historyMode ? `T${viewingTick}` : `T${ws.tick}`
+  const dot = document.getElementById('hdr-dot')
+  dot.className = historyMode ? 'dot-hist' : 'dot-live'
+  dot.title = historyMode ? `Tick ${viewingTick}` : 'Live'
+}
+
+function updateAgentList() {
+  const agents = historyMode && historySnap ? historySnap.agents : liveAgents
+  document.getElementById('agent-count').textContent = `(${agents.length})`
+  const el = document.getElementById('agent-list')
+  if (agents.length === 0) { el.innerHTML = '<div style="color:#374151;font-size:11px;padding:8px">No agents in world</div>'; return }
+  el.innerHTML = agents.map(a => {
+    const st = a.state || 'idle'
+    const stClass = ['sleeping','traveling','working','socializing'].includes(st) ? `st-${st}` : 'st-default'
+    const sel = (selectedAgent?.agent_id === a.agent_id) ? 'selected' : ''
+    return `<div class="agent-row ${sel}" data-id="${a.agent_id}" onclick="selectAgent('${a.agent_id}')">
+      <div class="agent-dot" style="background:${a.avatar_config?.primary_color||'#4a9eff'}"></div>
+      <span class="agent-name">${a.name}</span>
+      <span class="state-tag ${stClass}">${st}</span>
+    </div>`
+  }).join('')
+}
+
+function selectAgent(id) {
+  const agents = historyMode && historySnap ? historySnap.agents : liveAgents
+  selectedAgent = agents.find(a => a.agent_id === id) || null
+  selectedTile = null
+  centerOn(selectedAgent)
+  renderInspector()
+  updateAgentList()
+}
+
+function centerOn(agent) {
+  if (!agent) return
+  const TS = 32 * camera.zoom
+  camera.x = agent.x * TS - canvas.width/2
+  camera.y = agent.y * TS - canvas.height/2
+}
+
+function renderInspector() {
+  const el = document.getElementById('inspector')
+  if (selectedAgent) {
+    const a = selectedAgent
+    const col = a.avatar_config?.primary_color || '#4a9eff'
+    const needs = a.needs || {}
+    const makeBar = (label, val, color) =>
+      `<div class="bar-wrap"><span class="bl">${label}</span><div class="bar-track"><div class="bar-fill" style="width:${val}%;background:${color}"></div></div></div>`
+    const inv = a.inventory && Object.keys(a.inventory).length > 0
+      ? `<div class="inv-tags">${Object.entries(a.inventory).map(([k,v])=>`<span class="inv-tag">${v}× ${k.replace(/_/g,' ')}</span>`).join('')}</div>`
+      : ''
+    const skillEntries = a.skills ? Object.entries(a.skills).sort((x,y)=>y[1]-x[1]).slice(0,5) : []
+    const skillsHtml = skillEntries.length > 0
+      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Skills</div>${skillEntries.map(([k,v])=>makeBar(k.replace(/_/g,' '), Math.min(100,v), '#8b5cf6')).join('')}</div>`
+      : ''
+    const mem = (a.village_memory||[]).slice(0,5)
+    const memHtml = mem.length > 0
+      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Memory</div>${mem.map(m=>`<div style="font-size:10px;color:#6b7280;padding:2px 0;border-bottom:1px solid rgba(31,41,55,.3);line-height:1.4">${m}</div>`).join('')}</div>`
+      : ''
+    el.innerHTML = `
+      <div class="insp-title" style="color:${col}">● ${a.name}</div>
+      <div class="insp-row"><span class="insp-label">Pos</span><span class="insp-val">${a.x}, ${a.y}</span></div>
+      <div class="insp-row"><span class="insp-label">State</span><span class="insp-val">${a.state}</span></div>
+      <div class="insp-row"><span class="insp-label">Mood</span><span class="insp-val">${((a.mood||0)*100).toFixed(0)}%</span></div>
+      ${makeBar('Hunger', needs.hunger??0, '#f59e0b')}
+      ${makeBar('Rest', needs.rest??0, '#60a5fa')}
+      ${makeBar('Warmth', needs.warmth??0, '#f87171')}
+      ${makeBar('Social', needs.social??0, '#4ade80')}
+      ${a.current_goal ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Goal</div><div class="insp-goal">${a.current_goal}</div></div>` : ''}
+      ${inv ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Inventory</div>${inv}</div>` : ''}
+      ${skillsHtml}
+      ${memHtml}
+    `
+  } else if (selectedTile) {
+    const t = selectedTile
+    const tc = { grass:'#4ade80', light_forest:'#22c55e', dense_forest:'#16a34a', hills:'#ca8a04', mountain:'#9ca3af', water:'#60a5fa', beach:'#fde047', cave:'#6b7280' }[t.terrain] || '#9ca3af'
+    const res = (t.resource_nodes||[]).filter(r=>r.qty>0)
+    el.innerHTML = `
+      <div class="insp-title">${t.x}, ${t.y}</div>
+      <div class="insp-row"><span class="insp-label">Terrain</span><span class="insp-val" style="color:${tc};text-transform:capitalize">${t.terrain}</span></div>
+      <div class="insp-row"><span class="insp-label">Elevation</span><span class="insp-val">${t.elevation}</span></div>
+      ${t.narrative ? `<div class="insp-goal" style="margin-top:5px;font-style:italic;color:#6b7280">${t.narrative}</div>` : ''}
+      ${res.length > 0 ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Resources</div>${res.map(r=>`<div class="insp-row"><span class="insp-val" style="text-transform:capitalize">${r.type.replace(/_/g,' ')}</span><span style="color:#4b5563;font-size:10px;margin-left:auto">${r.qty}/${r.max_qty}</span></div>`).join('')}</div>` : ''}
+    `
+  } else {
+    el.innerHTML = '<div class="placeholder">Click a tile or agent to inspect</div>'
+  }
+}
+
+function updateEventLog() {
+  const evs = historyMode && historySnap ? historySnap.events : liveEvents
+  const el = document.getElementById('event-log')
+  if (!evs.length) { el.innerHTML = '<div class="ev-row" style="color:#374151">No events yet</div>'; return }
+  el.innerHTML = evs.slice(0, 80).map(ev => {
+    const cls = { speak:'ev-speak', craft:'ev-craft', build:'ev-build', gather:'ev-gather', movement:'ev-movement', need:'ev-need' }[ev.event_type] || 'ev-other'
+    return `<div class="ev-row"><span class="ev-time">D${ev.game_day} ${String(ev.game_hour??0).padStart(2,'0')}:00</span> <span class="${cls}">${ev.description||ev.event_type}</span></div>`
+  }).join('')
+}
+
+// ── Timeline ─────────────────────────────────────────────────────────────────
+const scrubber = document.getElementById('scrubber')
+const btnPrev  = document.getElementById('btn-prev')
+const btnNext  = document.getElementById('btn-next')
+const btnLive  = document.getElementById('btn-live')
+
+function updateTimelineUI() {
+  const hasHistory = historyRange.min != null && historyRange.max != null
+  const empty = document.getElementById('scrubber-empty')
+  const smin = document.getElementById('scrubber-min')
+  const smax = document.getElementById('scrubber-max')
+
+  if (hasHistory) {
+    empty.style.display = 'none'
+    scrubber.style.display = 'block'
+    smin.style.display = 'inline'; smin.textContent = historyRange.min
+    smax.style.display = 'inline'; smax.textContent = historyRange.max
+    scrubber.min = historyRange.min
+    scrubber.max = historyRange.max
+    scrubber.value = historyMode ? viewingTick : historyRange.max
+  } else {
+    empty.style.display = 'block'
+    scrubber.style.display = 'none'
+    smin.style.display = 'none'; smax.style.display = 'none'
+  }
+  btnPrev.disabled = !hasHistory || (historyMode && viewingTick <= historyRange.min)
+  btnNext.disabled = !hasHistory || (historyMode && viewingTick >= historyRange.max)
+  btnLive.className = historyMode ? 'live-btn hist' : 'live-btn live'
+  btnLive.innerHTML = historyMode
+    ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg> Go Live'
+    : '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg> Live'
+}
+
+async function goToTick(tick) {
+  historyMode = true
+  viewingTick = tick
+  scrubber.value = tick
+  updateTimelineUI()
+  updateHeader()
+  try {
+    const r = await fetch(`/village/history/${tick}`)
+    if (r.ok) {
+      historySnap = await r.json()
+      updateAgentList(); updateEventLog(); renderInspector()
+    }
+  } catch(e) {}
+}
+
+function goLive() {
+  historyMode = false; viewingTick = null; historySnap = null
+  updateTimelineUI(); updateHeader(); updateAgentList(); updateEventLog(); renderInspector()
+}
+
+scrubber.addEventListener('input', e => goToTick(Number(e.target.value)))
+btnPrev.addEventListener('click', () => {
+  const cur = historyMode ? viewingTick : historyRange.max
+  if (cur > historyRange.min) goToTick(cur - 1)
+})
+btnNext.addEventListener('click', () => {
+  if (!historyMode) return
+  if (viewingTick < historyRange.max) goToTick(viewingTick + 1)
+  else goLive()
+})
+btnLive.addEventListener('click', () => { if (historyMode) goLive() })
+
+async function fetchHistoryRange() {
+  try {
+    const r = await fetch('/village/history')
+    if (r.ok) {
+      const d = await r.json()
+      historyRange = { min: d.min_tick, max: d.max_tick }
+      updateTimelineUI()
+    }
+  } catch(e) {}
+}
+
+// ── Tick clock ────────────────────────────────────────────────────────────────
+let lastTickAt = null
+function updateClockDial() {
+  const arc = document.getElementById('tick-arc')
+  const hand = document.getElementById('tick-hand')
+  const clk = document.getElementById('tick-clock')
+  if (!arc || !hand) return
+  const rate = liveWorld?.tick_rate_seconds
+  if (historyMode || !lastTickAt || !rate) {
+    arc.setAttribute('d', '')
+    hand.setAttribute('x2', '10'); hand.setAttribute('y2', '4')
+    if (clk) clk.style.opacity = '0.2'
+    return
+  }
+  if (clk) clk.style.opacity = '0.7'
+  const elapsed = (Date.now() - lastTickAt) / 1000
+  const pct = Math.min(1, elapsed / rate)
+  const angle = pct * Math.PI * 2 - Math.PI / 2
+  const hx = 10 + 6 * Math.cos(angle)
+  const hy = 10 + 6 * Math.sin(angle)
+  hand.setAttribute('x2', hx.toFixed(2))
+  hand.setAttribute('y2', hy.toFixed(2))
+  if (pct <= 0) { arc.setAttribute('d', ''); return }
+  const sx = 10 + 7 * Math.cos(-Math.PI / 2)
+  const sy = 10 + 7 * Math.sin(-Math.PI / 2)
+  const ex = 10 + 7 * Math.cos(angle)
+  const ey = 10 + 7 * Math.sin(angle)
+  const large = pct > 0.5 ? 1 : 0
+  arc.setAttribute('d', `M ${sx.toFixed(2)} ${sy.toFixed(2)} A 7 7 0 ${large} 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`)
+}
+setInterval(updateClockDial, 100)
+
+// ── SSE ──────────────────────────────────────────────────────────────────────
+function connectSSE() {
+  const es = new EventSource('/village/stream')
+  es.addEventListener('tick_update', e => {
+    try {
+      const d = JSON.parse(e.data)
+      if (d.tiles) d.tiles.forEach(t => { liveTiles[`${t.x},${t.y}`] = t })
+      if (d.world_state?.tick != null) historyRange.max = d.world_state.tick
+      if (!historyMode) {
+        if (d.world_state) liveWorld = d.world_state
+        if (d.agents) liveAgents = d.agents
+        if (d.creatures) liveCreatures = d.creatures
+        if (d.recent_events) liveEvents = [...d.recent_events, ...liveEvents].slice(0, 80)
+        {
+          const ws2 = d.world_state
+          if (ws2?.last_tick_at && ws2?.server_time) {
+            lastTickAt = Date.now() - (ws2.server_time - ws2.last_tick_at) * 1000
+          }
+          // If last_tick_at is null (engine stopped/never run), leave lastTickAt as null
+          // so the clock stays dark rather than starting from page load time
+        }
+        updateHeader(); updateAgentList(); updateEventLog()
+        if (selectedAgent) {
+          const fresh = liveAgents.find(a => a.agent_id === selectedAgent.agent_id)
+          if (fresh) { selectedAgent = fresh; renderInspector() }
+        }
+      }
+      updateTimelineUI()
+    } catch(ex) {}
+  })
+  es.onerror = () => setTimeout(connectSSE, 3000)
+}
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+function initAuth() {
+  authToken = localStorage.getItem('village_token') || null
+  updateAuthUI()
+  if (authToken) loadAdminPanel()
+}
+
+function updateAuthUI() {
+  const btnLogin = document.getElementById('btn-login')
+  const btnAdmin = document.getElementById('btn-admin')
+  if (authToken) {
+    btnLogin.textContent = '✓ Admin'
+    btnAdmin.style.display = 'flex'
+  } else {
+    btnLogin.textContent = 'Login'
+    btnAdmin.style.display = 'none'
+    document.getElementById('admin-panel').classList.remove('open')
+    btnAdmin.classList.remove('active')
+  }
+}
+
+function toggleLoginModal() {
+  const m = document.getElementById('login-modal')
+  const visible = m.style.display !== 'none'
+  m.style.display = visible ? 'none' : 'flex'
+  if (!visible) {
+    document.getElementById('login-user').value = ''
+    document.getElementById('login-pass').value = ''
+    document.getElementById('login-err').textContent = ''
+    setTimeout(() => document.getElementById('login-user').focus(), 50)
+  }
+}
+
+async function doLogin() {
+  const user = document.getElementById('login-user').value.trim()
+  const pass = document.getElementById('login-pass').value
+  const errEl = document.getElementById('login-err')
+  if (!user || !pass) { errEl.textContent = 'Enter username and password'; return }
+  errEl.textContent = ''
+  try {
+    const r = await fetch(`https://${location.hostname}:13376/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass })
+    })
+    if (!r.ok) { errEl.textContent = 'Invalid credentials'; return }
+    const d = await r.json()
+    if (d.role !== 'admin') { errEl.textContent = 'Admin role required'; return }
+    authToken = d.access_token
+    localStorage.setItem('village_token', authToken)
+    toggleLoginModal()
+    updateAuthUI()
+    loadAdminPanel()
+  } catch(e) {
+    errEl.textContent = 'Login failed — check connection'
+  }
+}
+
+function logout() {
+  authToken = null
+  localStorage.removeItem('village_token')
+  updateAuthUI()
+}
+
+function toggleAdminPanel() {
+  const panel = document.getElementById('admin-panel')
+  const btn = document.getElementById('btn-admin')
+  const open = panel.classList.toggle('open')
+  btn.classList.toggle('active', open)
+  if (open) loadAdminPanel()
+}
+
+// ── Admin API ─────────────────────────────────────────────────────────────────
+async function adminFetch(path, opts = {}) {
+  if (!authToken) return null
+  opts.headers = { ...(opts.headers || {}), 'Authorization': `Bearer ${authToken}` }
+  const r = await fetch(path, opts)
+  if (r.status === 401) { logout(); return null }
+  return r
+}
+
+function admMsg(msg, isErr) {
+  const el = document.getElementById('adm-eng-msg')
+  el.textContent = msg
+  el.className = 'adm-msg ' + (isErr ? 'err' : 'ok')
+  setTimeout(() => { el.textContent = ''; el.className = 'adm-msg' }, 3000)
+}
+
+async function engineAction(action) {
+  try {
+    const r = await adminFetch(`/village/engine/${action}`, { method: 'POST' })
+    if (!r) return
+    if (r.ok) admMsg(action + ' ok', false)
+    else admMsg('Error: ' + (await r.text()), true)
+  } catch(e) { admMsg('Network error', true) }
+}
+
+async function saveEngineConfig() {
+  const tick = parseInt(document.getElementById('adm-tick-rate').value)
+  const hrs  = parseFloat(document.getElementById('adm-hours-tick').value)
+  try {
+    const r = await adminFetch('/village/engine/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tick_rate_seconds: tick })
+    })
+    if (!r) return
+    // hours_per_tick goes through sim-config
+    await adminFetch('/village/engine/sim-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hours_per_tick: hrs })
+    })
+    if (r.ok) admMsg('Engine config saved', false)
+    else admMsg('Error saving', true)
+  } catch(e) { admMsg('Network error', true) }
+}
+
+async function loadSimConfig() {
+  try {
+    const r = await adminFetch('/village/engine/sim-config')
+    if (!r?.ok) return
+    const cfg = await r.json()
+    const set = (id, val, dispId, suffix) => {
+      const el = document.getElementById(id)
+      const dv = document.getElementById(dispId)
+      if (el) { el.value = val; }
+      if (dv) dv.textContent = parseFloat(val).toFixed(1) + suffix
+    }
+    set('sc-hunger-decay',  cfg.hunger_decay        ?? 1.0, 'sc-hunger-decay-v', '×')
+    set('sc-rest-decay',    cfg.rest_decay          ?? 1.0, 'sc-rest-decay-v',   '×')
+    set('sc-warmth-decay',  cfg.warmth_decay        ?? 1.0, 'sc-warmth-decay-v', '×')
+    set('sc-social-decay',  cfg.social_decay        ?? 1.0, 'sc-social-decay-v', '×')
+    set('sc-cooked-restore',cfg.cooked_food_restore ?? 1.0, 'sc-cooked-v',       '×')
+    set('sc-raw-restore',   cfg.raw_food_restore    ?? 1.0, 'sc-raw-v',          '×')
+    set('sc-event-chance',  cfg.event_chance        ?? 1.0, 'sc-event-v',        '×')
+    const hel = document.getElementById('adm-hours-tick')
+    if (hel) { hel.value = String(cfg.hours_per_tick ?? 1) }
+  } catch(e) {}
+}
+
+async function saveSimConfig() {
+  const g = id => parseFloat(document.getElementById(id)?.value ?? 1)
+  const gi = id => parseInt(document.getElementById(id)?.value ?? 1)
+  const body = {
+    hunger_decay:        g('sc-hunger-decay'),
+    rest_decay:          g('sc-rest-decay'),
+    warmth_decay:        g('sc-warmth-decay'),
+    social_decay:        g('sc-social-decay'),
+    cooked_food_restore: g('sc-cooked-restore'),
+    raw_food_restore:    g('sc-raw-restore'),
+    event_chance:        g('sc-event-chance'),
+  }
+  try {
+    const r = await adminFetch('/village/engine/sim-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const msgEl = document.getElementById('adm-sim-msg')
+    if (r?.ok) { msgEl.textContent = 'Saved'; msgEl.className = 'adm-msg ok' }
+    else { msgEl.textContent = 'Error'; msgEl.className = 'adm-msg err' }
+    setTimeout(() => { msgEl.textContent = ''; msgEl.className = 'adm-msg' }, 2500)
+  } catch(e) {}
+}
+
+// ── Models & Gateway ──────────────────────────────────────────────────────────
+function toggleTokenVis() {
+  const el = document.getElementById('gw-token')
+  el.type = el.type === 'password' ? 'text' : 'password'
+}
+
+async function loadModelsConfig() {
+  const listEl = document.getElementById('adm-models-list')
+  if (listEl) listEl.innerHTML = '<div style="color:#374151;font-size:11px">Loading…</div>'
+
+  try {
+    const [gwRes, mcRes, availRes] = await Promise.all([
+      adminFetch('/village/admin/gateway-config'),
+      adminFetch('/village/admin/models'),
+      adminFetch('/village/admin/available-models'),
+    ])
+
+    if (gwRes?.ok) {
+      const gw = await gwRes.json()
+      const hint = document.getElementById('gw-token-hint')
+      if (hint) hint.textContent = gw.token_set
+        ? `Active token ends in …${gw.token_hint}`
+        : 'Using .env default token'
+    }
+
+    const availModels = availRes?.ok ? (await availRes.json()).models : []
+    const configMap = {}
+    if (mcRes?.ok) {
+      for (const c of await mcRes.json()) configMap[c.task] = c
+    }
+
+    const tasks = [
+      { task: 'world_agent',  label: 'World Agent',  desc: 'Tile gen, events, narration' },
+      { task: 'agent_brain',  label: 'Agent Brain',  desc: 'Per-agent decision loop'     },
+      { task: 'conversation', label: 'Conversation', desc: 'Agent-to-agent dialogue'     },
+      { task: 'narration',    label: 'Narration',    desc: 'Memory log entries'           },
+    ]
+
+    function buildOptions(selectedId, models) {
+      const opts = ['<option value="">— gateway default —</option>']
+      const all = selectedId && !models.includes(selectedId)
+        ? [selectedId, ...models]
+        : models
+      for (const m of all) {
+        const sel = m === selectedId ? ' selected' : ''
+        opts.push(`<option value="${m}"${sel}>${m}</option>`)
+      }
+      return opts.join('')
+    }
+
+    if (listEl) listEl.innerHTML = tasks.map(t => {
+      const c = configMap[t.task] || {}
+      const currentModel = c.model_id || ''
+      return `<div style="margin-bottom:8px;border:1px solid #1f2937;border-radius:4px;padding:7px">
+        <div style="font-size:10px;font-weight:700;color:#9ca3af;margin-bottom:1px">${t.label}</div>
+        <div style="font-size:9px;color:#4b5563;margin-bottom:5px">${t.desc}</div>
+        <select id="mc-model-${t.task}" class="adm-select" style="width:100%;margin-bottom:5px">
+          ${buildOptions(currentModel, availModels)}
+        </select>
+        <div class="adm-grow">
+          <label style="font-size:10px;color:#6b7280;white-space:nowrap">Temp</label>
+          <input type="number" id="mc-temp-${t.task}" class="adm-input"
+                 value="${c.temperature ?? 0.9}" min="0" max="2" step="0.05" style="width:50px">
+          <label style="font-size:10px;color:#6b7280;white-space:nowrap">Tokens</label>
+          <input type="number" id="mc-tokens-${t.task}" class="adm-input"
+                 value="${c.max_tokens ?? 512}" min="64" max="4096" step="64" style="width:58px">
+          <button class="adm-abtn add" style="margin-left:auto" onclick="saveTaskModel('${t.task}')">Save</button>
+        </div>
+      </div>`
+    }).join('')
+
+    if (availModels.length === 0 && listEl) {
+      listEl.insertAdjacentHTML('afterbegin',
+        '<div style="color:#f87171;font-size:10px;margin-bottom:6px">⚠ Could not load models from gateway</div>')
+    }
+  } catch(e) {}
+}
+
+async function saveGatewayConfig() {
+  const token = document.getElementById('gw-token')?.value.trim()
+  if (!token) return
+  const msg = document.getElementById('adm-models-msg')
+  try {
+    const r = await adminFetch('/village/admin/gateway-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+    if (r?.ok) {
+      msg.textContent = 'Token updated'; msg.className = 'adm-msg ok'
+      document.getElementById('gw-token').value = ''
+      await loadModelsConfig()
+    } else {
+      msg.textContent = 'Save failed'; msg.className = 'adm-msg err'
+    }
+    setTimeout(() => { msg.textContent = ''; msg.className = 'adm-msg' }, 2500)
+  } catch(e) {}
+}
+
+async function saveTaskModel(task) {
+  const model_id    = document.getElementById(`mc-model-${task}`)?.value.trim() ?? ''
+  const temperature = parseFloat(document.getElementById(`mc-temp-${task}`)?.value ?? 0.9)
+  const max_tokens  = parseInt(document.getElementById(`mc-tokens-${task}`)?.value ?? 512)
+  const msg = document.getElementById('adm-models-msg')
+  try {
+    const r = await adminFetch('/village/admin/models', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task, model_id, temperature, max_tokens }),
+    })
+    if (r?.ok) { msg.textContent = task + ' saved'; msg.className = 'adm-msg ok' }
+    else { msg.textContent = 'Save failed'; msg.className = 'adm-msg err' }
+    setTimeout(() => { msg.textContent = ''; msg.className = 'adm-msg' }, 2500)
+  } catch(e) {}
+}
+
+async function setAgentNeeds() {
+  const agentId = document.getElementById('adm-needs-agent')?.value
+  if (!agentId) return
+  const needs = {
+    hunger: parseInt(document.getElementById('adm-need-hunger')?.value ?? 30),
+    rest:   parseInt(document.getElementById('adm-need-rest')?.value   ?? 20),
+    warmth: parseInt(document.getElementById('adm-need-warmth')?.value ?? 20),
+    social: parseInt(document.getElementById('adm-need-social')?.value ?? 40),
+  }
+  const msgEl = document.getElementById('adm-needs-msg')
+  try {
+    const r = await adminFetch(`/village/agents/${agentId}/needs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(needs)
+    })
+    if (r?.ok) { msgEl.textContent = 'Applied'; msgEl.className = 'adm-msg ok' }
+    else { msgEl.textContent = 'Failed'; msgEl.className = 'adm-msg err' }
+    setTimeout(() => { msgEl.textContent = ''; msgEl.className = 'adm-msg' }, 2500)
+  } catch(e) {}
+}
+
+async function loadAdminPanel() {
+  if (!authToken) return
+  try {
+    // Sync engine status → tick rate slider
+    const sr = await adminFetch('/village/engine/status')
+    if (sr?.ok) {
+      const s = await sr.json()
+      const tr = document.getElementById('adm-tick-rate')
+      const tv = document.getElementById('adm-tick-val')
+      if (tr) { tr.value = s.tick_rate_seconds; if (tv) tv.textContent = s.tick_rate_seconds + 's' }
+    }
+    // Load sim config sliders + model/gateway config
+    await loadSimConfig()
+    await loadModelsConfig()
+
+    // Load agents: VillageService (has in_simulation flag) + AgentManager (has all registered agents)
+    const [vsRes, amRes] = await Promise.all([
+      fetch('/village/agents'),
+      fetch(`https://${location.hostname}:13374/agents`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      }).catch(() => null)
+    ])
+
+    const vsAgents = vsRes?.ok ? await vsRes.json() : []
+    const amAgents = amRes?.ok ? await amRes.json() : []
+
+    // Build lookup: agent_id → VillageService record (for in_simulation + avatar)
+    const vsMap = {}
+    for (const a of vsAgents) vsMap[a.agent_id] = a
+
+    // Merge: start from AgentManager list, fall back to VS-only agents
+    const amIds = new Set(amAgents.map(a => a.agent_id))
+    const vsOnly = vsAgents.filter(a => !amIds.has(a.agent_id))
+    const merged = [
+      ...amAgents.map(a => ({
+        agent_id: a.agent_id,
+        name: a.name,
+        ...(vsMap[a.agent_id] || {}),
+        in_simulation: vsMap[a.agent_id]?.in_simulation ?? false,
+      })),
+      ...vsOnly,
+    ]
+
+    document.getElementById('adm-agent-count').textContent = `(${merged.length})`
+    const el = document.getElementById('adm-agent-list')
+    if (!merged.length) { el.innerHTML = '<div style="color:#374151;font-size:11px;padding:4px 0">No agents found</div>'; return }
+
+    el.innerHTML = merged.map(a => {
+      const inSim = a.in_simulation
+      const col = a.avatar_config?.primary_color || '#4a9eff'
+      const godId = `god-${a.agent_id}`
+      return `
+        <div class="adm-agent">
+          <div class="agent-dot" style="background:${col}"></div>
+          <span class="adm-aname">${a.name}${inSim ? `<span style="color:#374151;font-size:9px;margin-left:4px">${a.state||''} ${a.x!=null?`(${a.x},${a.y})`:''}`.trim() + '</span>' : ''}</span>
+          ${inSim ? `<button class="adm-toggle" onclick="document.getElementById('${godId}').classList.toggle('open')" title="God mode">⚙</button>` : ''}
+          <button class="adm-abtn ${inSim ? 'rem' : 'add'}" id="adm-abtn-${a.agent_id}"
+            onclick="toggleAgent('${a.agent_id}',${inSim})">${inSim ? 'Remove' : 'Add'}</button>
+        </div>
+        ${inSim ? `
+        <div class="adm-god" id="${godId}">
+          <div class="adm-grow">
+            <label>Hint</label>
+            <input class="adm-input wide" id="hint-${a.agent_id}" placeholder="whisper to agent..." style="width:130px">
+            <button class="adm-abtn add" onclick="sendHint('${a.agent_id}')">Send</button>
+          </div>
+          <div class="adm-grow">
+            <label>Teleport</label>
+            <input type="number" class="adm-input" id="tp-x-${a.agent_id}" placeholder="X" style="width:44px">
+            <input type="number" class="adm-input" id="tp-y-${a.agent_id}" placeholder="Y" style="width:44px">
+            <button class="adm-abtn add" onclick="teleportAgent('${a.agent_id}')">Go</button>
+          </div>
+          <div class="adm-grow" style="margin-bottom:0">
+            <label>Give</label>
+            <input class="adm-input" id="give-item-${a.agent_id}" placeholder="item" style="width:90px">
+            <input type="number" class="adm-input" id="give-qty-${a.agent_id}" value="1" style="width:36px">
+            <button class="adm-abtn add" onclick="giveItem('${a.agent_id}')">Give</button>
+          </div>
+        </div>` : ''}
+      `
+    }).join('')
+
+    // Populate needs-override agent dropdown
+    const needsSel = document.getElementById('adm-needs-agent')
+    if (needsSel) {
+      const inSim = merged.filter(a => a.in_simulation)
+      needsSel.innerHTML = inSim.length
+        ? inSim.map(a => `<option value="${a.agent_id}">${a.name}</option>`).join('')
+        : '<option value="">No agents in world</option>'
+      // Sync sliders to first agent's current needs
+      if (inSim.length) {
+        const first = inSim[0]
+        const n = first.needs || {}
+        ;[['hunger',30],['rest',20],['warmth',20],['social',40]].forEach(([k,def]) => {
+          const sl = document.getElementById(`adm-need-${k}`)
+          const vl = document.getElementById(`adm-need-${k}-v`)
+          const v = Math.round(n[k] ?? def)
+          if (sl) sl.value = v
+          if (vl) vl.textContent = v + '%'
+        })
+      }
+    }
+  } catch(e) {}
+}
+
+async function toggleAgent(agentId, currentlyIn) {
+  const btn = document.getElementById(`adm-abtn-${agentId}`)
+  if (!btn || btn.disabled) return
+  btn.disabled = true
+  btn.className = 'adm-abtn pend'
+  try {
+    if (currentlyIn) {
+      const r1 = await adminFetch(`/village/agents/${agentId}`, { method: 'DELETE' })
+      if (!r1?.ok) { btn.disabled = false; btn.className = 'adm-abtn rem'; btn.textContent = 'Remove'; return }
+      const { confirm_token } = await r1.json()
+      let secs = 8
+      btn.textContent = secs + 's'
+      const iv = setInterval(() => { btn.textContent = (--secs) + 's'; if (secs <= 0) clearInterval(iv) }, 1000)
+      await new Promise(res => setTimeout(res, 8500))
+      clearInterval(iv)
+      const r2 = await adminFetch(`/village/agents/${agentId}/confirm?confirm_token=${confirm_token}`, { method: 'DELETE' })
+      if (r2?.ok) loadAdminPanel()
+      else { btn.disabled = false; btn.className = 'adm-abtn rem'; btn.textContent = 'Remove' }
+    } else {
+      const r1 = await adminFetch(`/village/agents/${agentId}/spawn`, { method: 'POST' })
+      if (!r1?.ok) { btn.disabled = false; btn.className = 'adm-abtn add'; btn.textContent = 'Add'; return }
+      const { confirm_token } = await r1.json()
+      let secs = 8
+      btn.textContent = secs + 's'
+      const iv = setInterval(() => { btn.textContent = (--secs) + 's'; if (secs <= 0) clearInterval(iv) }, 1000)
+      await new Promise(res => setTimeout(res, 8500))
+      clearInterval(iv)
+      const r2 = await adminFetch(`/village/agents/${agentId}/spawn/confirm?confirm_token=${confirm_token}`, { method: 'POST' })
+      if (r2?.ok) loadAdminPanel()
+      else { btn.disabled = false; btn.className = 'adm-abtn add'; btn.textContent = 'Add' }
+    }
+  } catch(e) {
+    btn.disabled = false
+    btn.className = currentlyIn ? 'adm-abtn rem' : 'adm-abtn add'
+    btn.textContent = currentlyIn ? 'Remove' : 'Add'
+  }
+}
+
+// ── God controls ─────────────────────────────────────────────────────────────
+async function sendHint(agentId) {
+  const text = document.getElementById(`hint-${agentId}`)?.value?.trim()
+  if (!text) return
+  const r = await adminFetch(`/village/agents/${agentId}/hint`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text })
+  })
+  if (r?.ok) { document.getElementById(`hint-${agentId}`).value = ''; admMsg('Hint sent', false) }
+  else admMsg('Failed', true)
+}
+
+async function teleportAgent(agentId) {
+  const x = parseInt(document.getElementById(`tp-x-${agentId}`)?.value)
+  const y = parseInt(document.getElementById(`tp-y-${agentId}`)?.value)
+  if (isNaN(x) || isNaN(y)) { admMsg('Enter x and y', true); return }
+  const r = await adminFetch(`/village/agents/${agentId}/teleport`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y })
+  })
+  if (r?.ok) admMsg('Teleported', false)
+  else admMsg('Failed', true)
+}
+
+async function giveItem(agentId) {
+  const item = document.getElementById(`give-item-${agentId}`)?.value?.trim()
+  const qty = parseInt(document.getElementById(`give-qty-${agentId}`)?.value) || 1
+  if (!item) { admMsg('Enter item name', true); return }
+  const r = await adminFetch(`/village/agents/${agentId}/give`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item, qty })
+  })
+  if (r?.ok) { document.getElementById(`give-item-${agentId}`).value = ''; admMsg('Given', false) }
+  else admMsg('Failed', true)
+}
+
+// ── World controls ────────────────────────────────────────────────────────────
+function admWorldMsg(msg, isErr) {
+  const el = document.getElementById('adm-world-msg')
+  el.textContent = msg; el.className = 'adm-msg ' + (isErr ? 'err' : 'ok')
+  setTimeout(() => { el.textContent = ''; el.className = 'adm-msg' }, 3000)
+}
+
+async function setSeason(season) {
+  const r = await adminFetch('/village/admin/season', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ season })
+  })
+  admWorldMsg(r?.ok ? 'Season set' : 'Failed', !r?.ok)
+}
+
+async function setWeather(weather) {
+  const r = await adminFetch('/village/admin/weather', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ weather })
+  })
+  admWorldMsg(r?.ok ? 'Weather set' : 'Failed', !r?.ok)
+}
+
+async function fireEvent() {
+  const type = document.getElementById('adm-event-type')?.value
+  const body = { type }
+  const x = document.getElementById('adm-ev-x')?.value
+  const y = document.getElementById('adm-ev-y')?.value
+  if (x !== '') body.x = parseInt(x)
+  if (y !== '') body.y = parseInt(y)
+  const r = await adminFetch('/village/admin/event', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  admWorldMsg(r?.ok ? 'Event fired' : 'Failed', !r?.ok)
+}
+
+async function dropItem() {
+  const item = document.getElementById('adm-drop-item')?.value?.trim()
+  const qty = parseInt(document.getElementById('adm-drop-qty')?.value) || 1
+  const x = parseInt(document.getElementById('adm-drop-x')?.value) || 0
+  const y = parseInt(document.getElementById('adm-drop-y')?.value) || 0
+  if (!item) { admWorldMsg('Enter item name', true); return }
+  const r = await adminFetch('/village/admin/drop-item', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item, qty, x, y })
+  })
+  admWorldMsg(r?.ok ? 'Dropped' : 'Failed', !r?.ok)
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+async function init() {
+  initAuth()
+  try {
+    const r = await fetch('/village/state')
+    if (r.ok) {
+      const d = await r.json()
+      if (d.world_state) liveWorld = d.world_state
+      if (d.agents) liveAgents = d.agents
+      if (d.creatures) liveCreatures = d.creatures
+      if (d.tiles) d.tiles.forEach(t => { liveTiles[`${t.x},${t.y}`] = t })
+      if (d.recent_events) liveEvents = d.recent_events
+      if (d.world_state?.tick != null) historyRange.max = d.world_state.tick
+    }
+  } catch(ex) {}
+
+  document.getElementById('loading').style.display = 'none'
+  updateHeader(); updateAgentList(); updateEventLog()
+  fetchHistoryRange()
+  connectSSE()
+  render()
+}
+
+init()
+</script>
+</body>
+</html>

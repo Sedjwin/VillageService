@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     aigateway_url: str = "http://localhost:8001"
     aigateway_token: str = "change-me"
     dashboard_url: str = "http://localhost:8000"
+    usermanager_url: str = "http://localhost:8005"
     default_tick_rate: int = 60
     agentmanager_url: str = "http://localhost:8003"
     # Empty string = use AIGateway token's default model (recommended)

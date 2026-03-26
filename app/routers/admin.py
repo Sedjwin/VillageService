@@ -35,29 +35,28 @@ _TOKEN_TTL = 10  # seconds
 # ---------------------------------------------------------------------------
 
 async def require_admin(authorization: str = Header(...)):
-    """Validate JWT against Dashboard /api/auth/me. Require admin role."""
+    """Validate JWT against UserManager /auth/validate. Require admin role."""
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token.")
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
-                f"{settings.dashboard_url}/api/auth/me",
+                f"{settings.usermanager_url}/auth/validate",
                 headers={"Authorization": authorization},
             )
     except httpx.RequestError as exc:
         logger.error("Auth check failed (network): %s", exc)
         raise HTTPException(status_code=503, detail="Auth service unreachable.")
 
-    if resp.status_code == 401:
-        raise HTTPException(status_code=401, detail="Not authenticated.")
     if resp.status_code != 200:
         raise HTTPException(status_code=503, detail="Auth service error.")
 
-    user = resp.json()
-    role = user.get("role", "")
-    if role != "admin":
+    data = resp.json()
+    if not data.get("valid"):
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    if data.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin role required.")
-    return user
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +114,11 @@ class RelationshipUpdate(BaseModel):
     agent_a: str
     agent_b: str
     score: int
+
+
+class GatewayConfigUpdate(BaseModel):
+    url: str | None = None
+    token: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +186,47 @@ async def engine_status(
     }
 
 
+@router.get("/engine/sim-config")
+async def get_sim_config(
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    if not world:
+        raise HTTPException(status_code=503, detail="World not initialised.")
+    return world.sim_config
+
+
+@router.put("/engine/sim-config")
+async def set_sim_config(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    if not world:
+        raise HTTPException(status_code=503, detail="World not initialised.")
+    cfg = world.sim_config
+    # Validate and clamp values
+    float_keys = {"hunger_decay", "rest_decay", "warmth_decay", "social_decay",
+                  "cooked_food_restore", "raw_food_restore", "event_chance"}
+    for k in float_keys:
+        if k in body:
+            cfg[k] = round(max(0.0, min(10.0, float(body[k]))), 2)
+    if "hours_per_tick" in body:
+        # Supported values: 0.25, 0.5, 1, 2, 3, 4
+        allowed = {0.25, 0.5, 1.0, 2.0, 3.0, 4.0}
+        val = float(body["hours_per_tick"])
+        # Snap to nearest allowed value
+        val = min(allowed, key=lambda x: abs(x - val))
+        cfg["hours_per_tick"] = val
+    world.sim_config = cfg
+    await db.commit()
+    return cfg
+
+
 # ---------------------------------------------------------------------------
 # Agent spawn / despawn
 # ---------------------------------------------------------------------------
@@ -241,9 +286,15 @@ async def spawn_agent_confirm(
 
     # Fetch agent info from AgentManager (via Dashboard proxy or direct)
     agent_data = await _fetch_agent_info(agent_id)
+    av = _derive_avatar_config(agent_data)
 
     if existing:
         existing.in_simulation = True
+        # Refresh avatar from profile on every re-spawn
+        existing.avatar_primary_color   = av["primary_color"]
+        existing.avatar_secondary_color = av["secondary_color"]
+        existing.avatar_body_shape      = av["body_shape"]
+        existing.avatar_eye_style       = av["eye_style"]
         agent = existing
     else:
         # Determine spawn position (random small offset from origin)
@@ -259,10 +310,10 @@ async def spawn_agent_confirm(
             x=ox,
             y=oy,
             state="idle",
-            avatar_primary_color=agent_data.get("primary_color", "#4a9eff"),
-            avatar_secondary_color=agent_data.get("secondary_color", "#1a3a6a"),
-            avatar_body_shape=agent_data.get("body_shape", "circle"),
-            avatar_eye_style=agent_data.get("eye_style", "round"),
+            avatar_primary_color=av["primary_color"],
+            avatar_secondary_color=av["secondary_color"],
+            avatar_body_shape=av["body_shape"],
+            avatar_eye_style=av["eye_style"],
         )
         agent.inventory = {}
         agent.skills = {}
@@ -434,6 +485,30 @@ async def give_item(
     return {"status": "given", "item": body.item, "qty": body.qty}
 
 
+@router.put("/agents/{agent_id}/needs")
+async def set_agent_needs(
+    agent_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(
+        select(VillageAgent).where(VillageAgent.agent_id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    needs = agent.needs
+    for key in ("hunger", "rest", "warmth", "social"):
+        if key in body:
+            needs[key] = max(0.0, min(100.0, float(body[key])))
+    agent.needs = needs
+    from app.physics import compute_mood
+    agent.mood = compute_mood(needs)
+    await db.commit()
+    return {"status": "ok", "needs": needs}
+
+
 # ---------------------------------------------------------------------------
 # World management
 # ---------------------------------------------------------------------------
@@ -530,6 +605,67 @@ async def set_season(
     world.season = body.season
     await db.commit()
     return {"season": body.season}
+
+
+@router.get("/admin/gateway-config")
+async def get_gateway_config(
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    if not world:
+        raise HTTPException(status_code=503, detail="World not initialised.")
+    cfg = world.gateway_config
+    token = cfg.get("token", "")
+    return {
+        "token_set": bool(token),
+        "token_hint": token[-4:] if token else "",
+    }
+
+
+@router.put("/admin/gateway-config")
+async def set_gateway_config(
+    body: GatewayConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    if not world:
+        raise HTTPException(status_code=503, detail="World not initialised.")
+    cfg = world.gateway_config
+    if body.token:
+        cfg["token"] = body.token.strip()
+    world.gateway_config = cfg
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/admin/available-models")
+async def get_available_models(
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    """Fetch model list from AIGateway using the effective token."""
+    result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = result.scalar_one_or_none()
+    gw = world.gateway_config if world else {}
+    effective_token = gw.get("token") or settings.aigateway_token
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{settings.aigateway_url.rstrip('/')}/v1/models",
+                headers={"Authorization": f"Bearer {effective_token}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            models = [m["id"] for m in data.get("data", [])]
+            return {"models": sorted(models)}
+    except Exception as exc:
+        logger.warning("Could not fetch models from gateway: %s", exc)
+        return {"models": []}
 
 
 @router.put("/admin/models")
@@ -644,3 +780,42 @@ async def _fetch_agent_info(agent_id: str) -> dict:
 
     logger.warning("Could not fetch agent info for %s — using defaults.", agent_id)
     return {"name": agent_id, "personality_summary": "", "description": ""}
+
+
+def _derive_avatar_config(agent_data: dict) -> dict:
+    """
+    Derive village avatar config from AgentManager profile.appearance fields.
+    face_roundness  → body_shape:  <0.25=square, >0.70=circle, else tall_rectangle
+    eye_shape_roundness → eye_style: >=0.5=round, else square
+    """
+    import json as _json
+
+    profile_raw = agent_data.get("profile")
+    if isinstance(profile_raw, str):
+        try:
+            profile_raw = _json.loads(profile_raw)
+        except Exception:
+            profile_raw = None
+
+    appearance = (profile_raw or {}).get("appearance", {}) if isinstance(profile_raw, dict) else {}
+
+    primary   = appearance.get("primary_color",   "#4a9eff")
+    secondary = appearance.get("secondary_color", "#1a3a6a")
+
+    roundness = appearance.get("face_roundness", 0.5)
+    if roundness < 0.25:
+        body_shape = "square"
+    elif roundness > 0.70:
+        body_shape = "circle"
+    else:
+        body_shape = "tall_rectangle"
+
+    eye_round = appearance.get("eye_shape_roundness", 0.5)
+    eye_style = "round" if eye_round >= 0.5 else "square"
+
+    return {
+        "primary_color":   primary,
+        "secondary_color": secondary,
+        "body_shape":      body_shape,
+        "eye_style":       eye_style,
+    }

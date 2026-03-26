@@ -60,31 +60,28 @@ def decay_needs(
     season: str,
     has_shelter: bool,
     has_fire_nearby: bool,
+    sim_config: dict | None = None,
 ) -> dict:
     """
     Apply per-tick needs decay.
     Needs are pressure values (0 = fine, 100 = critical).
     Returns updated needs dict.
     """
+    cfg = sim_config or {}
     n = dict(needs)
 
-    # Hunger rises every tick
-    n["hunger"] = min(100, n.get("hunger", 0) + 1.2)
+    n["hunger"] = min(100, n.get("hunger", 0) + 0.35 * cfg.get("hunger_decay", 1.0))
+    n["rest"]   = min(100, n.get("rest",   0) + 0.22 * cfg.get("rest_decay",   1.0))
 
-    # Rest rises every tick (less if it's daytime — agents can push through)
-    n["rest"] = min(100, n.get("rest", 0) + 0.8)
-
-    # Warmth depends on season, shelter, fire
     warmth_mult = _SEASON_WARMTH_MULTIPLIER.get(season, 1.0)
-    warmth_rate = 0.5 * warmth_mult
+    warmth_rate = 0.18 * warmth_mult * cfg.get("warmth_decay", 1.0)
     if has_shelter:
         warmth_rate *= 0.3
     if has_fire_nearby:
         warmth_rate *= 0.2
     n["warmth"] = min(100, n.get("warmth", 0) + warmth_rate)
 
-    # Social rises slowly unless agent was socializing this tick
-    n["social"] = min(100, n.get("social", 0) + 0.3)
+    n["social"] = min(100, n.get("social", 0) + 0.12 * cfg.get("social_decay", 1.0))
 
     return {k: round(v, 2) for k, v in n.items()}
 

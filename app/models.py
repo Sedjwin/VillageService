@@ -34,6 +34,39 @@ class WorldState(Base):
     engine_state: Mapped[str] = mapped_column(String(16), default="stopped")
     tick_rate_seconds: Mapped[int] = mapped_column(Integer, default=60)
     world_bible: Mapped[str] = mapped_column(Text, default="")
+    last_tick_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    game_hour_accum: Mapped[float] = mapped_column(Float, default=0.0)
+    _sim_config: Mapped[str] = mapped_column(Text, default="{}")
+    _gateway_config: Mapped[str] = mapped_column(Text, default="{}")
+
+    # Default tuning values — multipliers applied in physics layer
+    _SIM_DEFAULTS: dict = {
+        "hunger_decay":        1.0,   # multiplier on base 0.35/tick
+        "rest_decay":          1.0,   # multiplier on base 0.22/tick
+        "warmth_decay":        1.0,   # multiplier on base 0.18/tick
+        "social_decay":        1.0,   # multiplier on base 0.12/tick
+        "cooked_food_restore": 1.0,   # multiplier on base 45 points
+        "raw_food_restore":    1.0,   # multiplier on base 25 points
+        "hours_per_tick":      1.0,   # game-hours advanced per tick (0.25/0.5/1/2/3/4)
+        "event_chance":        1.0,   # world-event frequency multiplier
+    }
+
+    @property
+    def sim_config(self) -> dict:
+        stored = _load_json(self._sim_config, {})
+        return {**self._SIM_DEFAULTS, **stored}
+
+    @sim_config.setter
+    def sim_config(self, value: dict):
+        self._sim_config = json.dumps(value)
+
+    @property
+    def gateway_config(self) -> dict:
+        return _load_json(self._gateway_config, {})
+
+    @gateway_config.setter
+    def gateway_config(self, value: dict):
+        self._gateway_config = json.dumps(value)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +164,7 @@ class VillageAgent(Base):
     avatar_eye_style: Mapped[str] = mapped_column(String(16), default="round")
     joined_tick: Mapped[int] = mapped_column(Integer, default=0)
     last_tick: Mapped[int] = mapped_column(Integer, default=0)
+    goal_set_tick: Mapped[int] = mapped_column(Integer, default=0)
     _starter_crate_opened: Mapped[str] = mapped_column(Text, default="false")
 
     # --- JSON property helpers ---
@@ -261,6 +295,37 @@ class EventLog(Base):
     @agents_involved.setter
     def agents_involved(self, value: list):
         self._agents_involved = json.dumps(value)
+
+
+# ---------------------------------------------------------------------------
+# TickSnapshot — compact per-tick history (agents + world state, not tiles)
+# ---------------------------------------------------------------------------
+
+class TickSnapshot(Base):
+    __tablename__ = "tick_snapshots"
+
+    tick: Mapped[int] = mapped_column(Integer, primary_key=True)
+    world_json: Mapped[str] = mapped_column(Text)   # WorldStateOut dict
+    agents_json: Mapped[str] = mapped_column(Text)  # compact agent list
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Creature
+# ---------------------------------------------------------------------------
+
+class Creature(Base):
+    __tablename__ = "creatures"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    creature_type: Mapped[str] = mapped_column(String(16), default="rabbit")
+    x: Mapped[int] = mapped_column(Integer, default=0)
+    y: Mapped[int] = mapped_column(Integer, default=0)
+    state: Mapped[str] = mapped_column(String(16), default="idle")
+    last_tick: Mapped[int] = mapped_column(Integer, default=0)
+    spawned_tick: Mapped[int] = mapped_column(Integer, default=0)
 
 
 # ---------------------------------------------------------------------------

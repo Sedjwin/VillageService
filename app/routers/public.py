@@ -8,14 +8,17 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.models import Conversation, EventLog, Tile, VillageAgent, WorldState
+import json
+
+from app.database import AsyncSessionLocal, get_db
+from app.models import Conversation, Creature, EventLog, Tile, TickSnapshot, VillageAgent, WorldState
 from app.schemas import (
     AgentStateOut,
     ConversationOut,
+    CreatureOut,
     EventLogOut,
     TileOut,
     VillageStateOut,
@@ -53,11 +56,18 @@ async def _build_village_state(db: AsyncSession) -> VillageStateOut:
     tiles_result = await db.execute(select(Tile))
     tiles = tiles_result.scalars().all()
 
+    creatures_result = await db.execute(select(Creature))
+    creatures = creatures_result.scalars().all()
+
     return VillageStateOut(
         world_state=world_to_out(world),
         agents=[agent_to_out(a) for a in agents],
         recent_events=[event_to_out(e) for e in events],
         tiles=[tile_to_out(t) for t in tiles],
+        creatures=[
+            CreatureOut(id=c.id, creature_type=c.creature_type, x=c.x, y=c.y, state=c.state)
+            for c in creatures
+        ],
     )
 
 
@@ -72,7 +82,7 @@ async def get_village_state(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/stream")
-async def village_stream(db: AsyncSession = Depends(get_db)):
+async def village_stream():
     """
     SSE stream. Sends tick_update events.
     On first connect, immediately sends current state.
@@ -80,10 +90,11 @@ async def village_stream(db: AsyncSession = Depends(get_db)):
     queue = sse_manager.subscribe()
 
     async def event_generator():
-        # Send current state immediately
+        # Send current state immediately — use a fresh session (the Depends session
+        # closes when the endpoint function returns, before the generator runs).
         try:
-            state = await _build_village_state(db)
-            import json
+            async with AsyncSessionLocal() as db:
+                state = await _build_village_state(db)
             initial = f"event: tick_update\ndata: {state.model_dump_json()}\n\n"
             yield initial
         except Exception as exc:
@@ -173,14 +184,18 @@ async def get_events(
 @router.get("/conversations", response_model=list[ConversationOut])
 async def get_conversations(
     limit: int = Query(20, ge=1, le=100),
+    agent_id: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
+    query = (
         select(Conversation)
         .where(Conversation.completed == True)
         .order_by(Conversation.tick.desc())
-        .limit(limit)
     )
+    if agent_id:
+        query = query.where(Conversation._participants.like(f'%"{agent_id}"%'))
+    query = query.limit(limit)
+    result = await db.execute(query)
     convos = result.scalars().all()
     return [
         ConversationOut(
@@ -194,3 +209,50 @@ async def get_conversations(
         )
         for c in convos
     ]
+
+
+@router.get("/history")
+async def get_history_range(db: AsyncSession = Depends(get_db)):
+    """Return the tick range available in the snapshot history."""
+    result = await db.execute(
+        select(
+            func.min(TickSnapshot.tick),
+            func.max(TickSnapshot.tick),
+            func.count(TickSnapshot.tick),
+        )
+    )
+    row = result.one()
+    return {"min_tick": row[0], "max_tick": row[1], "count": row[2]}
+
+
+@router.get("/history/{tick}")
+async def get_tick_snapshot(tick: int, db: AsyncSession = Depends(get_db)):
+    """Return the world + agent snapshot for a specific tick, plus events from that tick."""
+    result = await db.execute(
+        select(TickSnapshot).where(TickSnapshot.tick == tick)
+    )
+    snap = result.scalar_one_or_none()
+    if not snap:
+        # Try nearest tick if exact doesn't exist
+        nearest = await db.execute(
+            select(TickSnapshot)
+            .order_by(func.abs(TickSnapshot.tick - tick))
+            .limit(1)
+        )
+        snap = nearest.scalar_one_or_none()
+        if not snap:
+            raise HTTPException(status_code=404, detail="No history snapshots available yet.")
+
+    events_result = await db.execute(
+        select(EventLog)
+        .where(EventLog.tick == snap.tick)
+        .order_by(EventLog.created_at)
+    )
+    events = events_result.scalars().all()
+
+    return {
+        "tick": snap.tick,
+        "world_state": json.loads(snap.world_json),
+        "agents": json.loads(snap.agents_json),
+        "events": [event_to_out(e).model_dump() for e in events],
+    }

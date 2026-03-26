@@ -1,3 +1,4 @@
+import time as _time
 from typing import Any
 from pydantic import BaseModel
 
@@ -40,6 +41,8 @@ class WorldStateOut(BaseModel):
     weather: str
     engine_state: str
     tick_rate_seconds: int
+    last_tick_at: float | None = None   # unix timestamp of last tick on server
+    server_time: float | None = None    # unix timestamp when this payload was built
 
 
 class EventLogOut(BaseModel):
@@ -54,11 +57,20 @@ class EventLogOut(BaseModel):
     y: int | None
 
 
+class CreatureOut(BaseModel):
+    id: str
+    creature_type: str
+    x: int
+    y: int
+    state: str
+
+
 class VillageStateOut(BaseModel):
     world_state: WorldStateOut
     agents: list[AgentStateOut]
     recent_events: list[EventLogOut]
     tiles: list[TileOut] = []
+    creatures: list[CreatureOut] = []
 
 
 class SpawnConfirmToken(BaseModel):
@@ -113,6 +125,8 @@ def world_to_out(world) -> WorldStateOut:
         weather=world.weather,
         engine_state=world.engine_state,
         tick_rate_seconds=world.tick_rate_seconds,
+        last_tick_at=world.last_tick_at,
+        server_time=_time.time(),
     )
 
 

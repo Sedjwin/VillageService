@@ -7,16 +7,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+import time as _time
 from datetime import datetime
 
-from sqlalchemy import select
+import json
+
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.events import check_random_event, apply_event, _SEASONS, _SEASON_WEATHER
 from app.los import calculate_los
-from app.models import EventLog, Tile, VillageAgent, WorldState, Conversation
+from app.models import Creature, EventLog, ModelConfig, Tile, TickSnapshot, VillageAgent, WorldState, Conversation
 from app.physics import (
     apply_skill_gain,
     can_gather,
@@ -44,6 +47,53 @@ _DIRECTION_DELTAS = {
 
 # How many game-days per season
 _DAYS_PER_SEASON = 30
+
+# Max snapshots to keep (rolling window)
+_MAX_SNAPSHOTS = 2000
+
+
+# ---------------------------------------------------------------------------
+# Tick snapshot
+# ---------------------------------------------------------------------------
+
+async def _save_tick_snapshot(db: AsyncSession, world: WorldState, agents: list[VillageAgent]):
+    """Save a compact snapshot of this tick for timeline replay."""
+    snap = TickSnapshot(
+        tick=world.tick,
+        world_json=json.dumps({
+            "tick": world.tick,
+            "game_day": world.game_day,
+            "game_hour": world.game_hour,
+            "season": world.season,
+            "weather": world.weather,
+            "engine_state": world.engine_state,
+            "tick_rate_seconds": world.tick_rate_seconds,
+        }),
+        agents_json=json.dumps([{
+            "agent_id": a.agent_id,
+            "name": a.name,
+            "in_simulation": a.in_simulation,
+            "x": a.x,
+            "y": a.y,
+            "state": a.state,
+            "mood": a.mood,
+            "needs": a.needs,
+            "current_goal": a.current_goal,
+            "inventory": a.inventory,
+            "avatar_config": {
+                "primary_color": a.avatar_primary_color,
+                "secondary_color": a.avatar_secondary_color,
+                "body_shape": a.avatar_body_shape,
+                "eye_style": a.avatar_eye_style,
+            },
+        } for a in agents]),
+    )
+    db.add(snap)
+
+    # Prune old snapshots every 50 ticks
+    if world.tick % 50 == 0:
+        cutoff = world.tick - _MAX_SNAPSHOTS
+        await db.execute(delete(TickSnapshot).where(TickSnapshot.tick < cutoff))
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +157,7 @@ async def _ensure_tile_exists(
     db: AsyncSession,
     world: WorldState,
     world_agent: WorldAgent,
+    model: str = "",
 ) -> Tile:
     """Return existing tile or generate a new one via WorldAgent."""
     tile = await _get_tile(db, x, y)
@@ -125,8 +176,8 @@ async def _ensure_tile_exists(
                 "narrative": adj.narrative,
             })
 
-    model = settings.world_agent_model
-    data = await world_agent.generate_tile(x, y, adj_tiles, world.world_bible, model)
+    effective_model = model or settings.world_agent_model
+    data = await world_agent.generate_tile(x, y, adj_tiles, world.world_bible, effective_model)
 
     tile = Tile(
         x=x, y=y,
@@ -140,6 +191,11 @@ async def _ensure_tile_exists(
     tile.buildings = []
     tile.explored_by = []
     db.add(tile)
+
+    # Chance to spawn a creature on new tiles
+    from app.creatures import maybe_spawn_creature
+    await maybe_spawn_creature(x, y, tile.terrain, db, world)
+
     return tile
 
 
@@ -215,24 +271,28 @@ async def _tick_needs(
         b.get("type") == "campfire" for b in tile_buildings
     )
 
-    needs = decay_needs(agent.needs, world.season, has_shelter, has_fire)
+    cfg = world.sim_config
+    needs = decay_needs(agent.needs, world.season, has_shelter, has_fire, cfg)
 
-    # Eating: if hunger critical and has food, auto-eat
-    if needs.get("hunger", 0) >= 70 and agent.inventory.get("cooked_food", 0) > 0:
+    cooked_restore = 45 * cfg.get("cooked_food_restore", 1.0)
+    raw_restore    = 25 * cfg.get("raw_food_restore",    1.0)
+
+    # Auto-eat only when genuinely hungry
+    if needs.get("hunger", 0) >= 82 and agent.inventory.get("cooked_food", 0) > 0:
         inv = agent.inventory
         inv["cooked_food"] -= 1
         if inv["cooked_food"] == 0:
             del inv["cooked_food"]
         agent.inventory = inv
-        needs = satisfy_need(needs, "hunger", 40)
+        needs = satisfy_need(needs, "hunger", cooked_restore)
         agent.add_memory("Ate some cooked food — felt better immediately.")
-    elif needs.get("hunger", 0) >= 80 and agent.inventory.get("raw_food", 0) > 0:
+    elif needs.get("hunger", 0) >= 91 and agent.inventory.get("raw_food", 0) > 0:
         inv = agent.inventory
         inv["raw_food"] -= 1
         if inv["raw_food"] == 0:
             del inv["raw_food"]
         agent.inventory = inv
-        needs = satisfy_need(needs, "hunger", 20)  # raw food is less satisfying
+        needs = satisfy_need(needs, "hunger", raw_restore)
         agent.add_memory("Had to eat something raw. Better than nothing.")
 
     # Rest: if exhausted and standing still, auto-rest
@@ -240,6 +300,25 @@ async def _tick_needs(
         needs = satisfy_need(needs, "rest", 30)
         agent.state = "idle"
         agent.add_memory("Couldn't keep going — had to rest.")
+
+    # Soft death / collapse: both hunger and rest critical → agent collapses
+    if (
+        needs.get("hunger", 0) >= 95
+        and needs.get("rest", 0) >= 95
+        and agent.state != "collapsed"
+    ):
+        agent.state = "collapsed"
+        agent.travel_path = []
+        needs["hunger"] = 100
+        needs["rest"] = 100
+        agent.add_memory(
+            "My body gave out — I collapsed. Everything went dark. I need help."
+        )
+        await _log_event(
+            db, world, "collapse",
+            f"{agent.name} collapsed from exhaustion and hunger at ({agent.x},{agent.y}).",
+            [agent.agent_id], agent.x, agent.y,
+        )
 
     agent.needs = needs
     agent.mood = compute_mood(needs)
@@ -253,6 +332,7 @@ async def _check_conversations(
     agents: list[VillageAgent],
     db: AsyncSession,
     world: WorldState,
+    engine: "VillageEngine",
 ):
     """Check for agents sharing a tile who might want to talk."""
     import random
@@ -286,9 +366,9 @@ async def _check_conversations(
                 agent_a=a,
                 agent_b=b,
                 trigger=trigger,
-                conversation_model=settings.conversation_model,
-                aigateway_url=settings.aigateway_url,
-                token=settings.aigateway_token,
+                conversation_model=engine._eff_conv_model,
+                aigateway_url=engine._eff_url,
+                token=engine._eff_token,
                 db=db,
                 world_state=world,
             )
@@ -346,7 +426,7 @@ async def _do_agent_turn(
         tile = tiles_map.get((vx, vy))
         if tile is None:
             # Generate tile if not yet known
-            tile = await _ensure_tile_exists(vx, vy, db, world, engine.world_agent)
+            tile = await _ensure_tile_exists(vx, vy, db, world, engine.world_agent, engine._eff_world_model)
             tiles_map[(vx, vy)] = tile
         visible_tiles.append({
             "x": tile.x, "y": tile.y,
@@ -374,7 +454,7 @@ async def _do_agent_turn(
     ]
 
     # Determine model
-    model = agent.brain_model or settings.agent_brain_model
+    model = agent.brain_model or engine._eff_brain_model
 
     # Ask brain for action
     action = await engine.agent_brain.decide_action(
@@ -383,8 +463,8 @@ async def _do_agent_turn(
         world_state=world,
         nearby_agents=nearby_agents,
         model=model,
-        aigateway_url=settings.aigateway_url,
-        token=settings.aigateway_token,
+        aigateway_url=engine._eff_url,
+        token=engine._eff_token,
     )
 
     # Clear god_hint after use
@@ -434,11 +514,15 @@ async def _execute_action(
     elif act == "examine":
         await _action_examine(agent, action, db, world, tiles_map)
 
+    elif act == "loot":
+        await _action_loot(agent, action, db, world, engine, tiles_map)
+
     elif act == "write":
         await _action_write(agent, action, db, world, tiles_map)
 
     elif act == "set_goal":
         agent.current_goal = action.get("goal", "")
+        agent.goal_set_tick = world.tick
         agent.add_memory(f"Set new goal: {agent.current_goal}")
 
     elif act == "wait":
@@ -465,7 +549,7 @@ async def _action_move(
     delta = _DIRECTION_DELTAS.get(direction, (0, 1))
     tx, ty = agent.x + delta[0], agent.y + delta[1]
 
-    dest_tile = await _ensure_tile_exists(tx, ty, db, world, engine.world_agent)
+    dest_tile = await _ensure_tile_exists(tx, ty, db, world, engine.world_agent, engine._eff_world_model)
     cost = get_terrain_movement_cost(dest_tile.terrain)
 
     if cost is None:
@@ -530,10 +614,6 @@ async def _action_gather(
 
     skill = "gathering" if resource in ("raw_food", "tinder", "paper") else "foraging"
     agent.skills = apply_skill_gain(agent.skills, skill)
-
-    # If gathering food, satisfy hunger slightly
-    if resource == "raw_food":
-        agent.needs = satisfy_need(agent.needs, "hunger", 5)
 
     agent.state = "working"
     agent.add_memory(f"Gathered {qty}x {item_type} at ({agent.x},{agent.y}).")
@@ -616,6 +696,10 @@ async def _action_build(
                 features.append("campfire")
             tile.features = features
 
+        # Road tile: change terrain so movement cost (0.5) kicks in automatically
+        if structure == "road_tile":
+            tile.terrain = "road"
+
     agent.add_memory(f"Built {structure} at ({agent.x},{agent.y}).")
 
     await _log_event(
@@ -665,13 +749,16 @@ async def _action_eat(
 ):
     food = action.get("food", "")
     inv = agent.inventory
+    cfg = world.sim_config
+    cooked_restore = 40 * cfg.get("cooked_food_restore", 1.0)
+    raw_restore    = 22 * cfg.get("raw_food_restore",    1.0)
 
     if food == "cooked_food" and inv.get("cooked_food", 0) > 0:
         inv["cooked_food"] -= 1
         if inv["cooked_food"] == 0:
             del inv["cooked_food"]
         agent.inventory = inv
-        agent.needs = satisfy_need(agent.needs, "hunger", 40)
+        agent.needs = satisfy_need(agent.needs, "hunger", cooked_restore)
         agent.add_memory("Ate cooked food — properly satisfied.")
         await _log_event(db, world, "need", f"{agent.name} ate cooked food.", [agent.agent_id], agent.x, agent.y)
     elif food in ("raw_food", "") and inv.get("raw_food", 0) > 0:
@@ -679,7 +766,7 @@ async def _action_eat(
         if inv["raw_food"] == 0:
             del inv["raw_food"]
         agent.inventory = inv
-        agent.needs = satisfy_need(agent.needs, "hunger", 22)
+        agent.needs = satisfy_need(agent.needs, "hunger", raw_restore)
         agent.add_memory("Ate raw food. Not ideal, but filling enough.")
         await _log_event(db, world, "need", f"{agent.name} ate raw food.", [agent.agent_id], agent.x, agent.y)
     else:
@@ -724,6 +811,60 @@ async def _action_examine(
     await _log_event(
         db, world, "discovery",
         f"{agent.name} examined {target}.",
+        [agent.agent_id], agent.x, agent.y,
+    )
+
+
+async def _action_loot(
+    agent: VillageAgent,
+    action: dict,
+    db: AsyncSession,
+    world: WorldState,
+    engine: "VillageEngine",
+    tiles_map: dict,
+):
+    tile = tiles_map.get((agent.x, agent.y))
+    if tile is None:
+        agent.add_memory("Tried to search for loot but the ground felt hollow.")
+        return
+
+    features = tile.features
+    if "ruins" not in features:
+        agent.add_memory("Nothing to loot here — no ruins.")
+        return
+
+    if "ruins_looted" in features:
+        agent.add_memory("Already picked through these ruins. Nothing left.")
+        return
+
+    # Generate loot via WorldAgent
+    loot = await engine.world_agent.generate_ruins_loot(
+        agent_name=agent.name,
+        personality=agent.personality_summary,
+        tile_narrative=tile.narrative,
+        world_bible="",
+        model=engine._eff_world_model,
+    )
+
+    # Give items to agent
+    inv = agent.inventory
+    items_found = []
+    for item_type, qty in loot["items"].items():
+        inv[item_type] = inv.get(item_type, 0) + qty
+        items_found.append(f"{qty}x {item_type}")
+    agent.inventory = inv
+
+    # Mark ruins as looted
+    features.append("ruins_looted")
+    tile.features = features
+
+    agent.state = "working"
+    narrative = loot["narrative"]
+    agent.add_memory(f"Looted ruins at ({agent.x},{agent.y}): {narrative[:80]}")
+
+    await _log_event(
+        db, world, "discovery",
+        f"{agent.name} searched ruins at ({agent.x},{agent.y}) — found {', '.join(items_found)}.",
         [agent.agent_id], agent.x, agent.y,
     )
 
@@ -801,7 +942,7 @@ async def _broadcast_state(
     agents: list[VillageAgent],
     db: AsyncSession,
 ):
-    from app.schemas import world_to_out, agent_to_out, event_to_out, tile_to_out
+    from app.schemas import world_to_out, agent_to_out, event_to_out, tile_to_out, CreatureOut
 
     # Get recent events
     events_result = await db.execute(
@@ -815,11 +956,19 @@ async def _broadcast_state(
     tiles_result = await db.execute(select(Tile))
     all_tiles = tiles_result.scalars().all()
 
+    # Get creatures
+    creatures_result = await db.execute(select(Creature))
+    all_creatures = creatures_result.scalars().all()
+
     payload = {
         "world_state": world_to_out(world).model_dump(),
         "agents": [agent_to_out(a).model_dump() for a in agents],
         "recent_events": [event_to_out(e).model_dump() for e in recent_events],
         "tiles": [tile_to_out(t).model_dump() for t in all_tiles],
+        "creatures": [
+            CreatureOut(id=c.id, creature_type=c.creature_type, x=c.x, y=c.y, state=c.state).model_dump()
+            for c in all_creatures
+        ],
     }
     await sse_manager.broadcast("tick_update", payload)
 
@@ -834,6 +983,12 @@ class VillageEngine:
         self.agent_brain = AgentBrain()
         self._task: asyncio.Task | None = None
         self._stepping = False
+        # Effective runtime config — refreshed each tick from DB overrides
+        self._eff_url: str = settings.aigateway_url
+        self._eff_token: str = settings.aigateway_token
+        self._eff_brain_model: str = settings.agent_brain_model
+        self._eff_conv_model: str = settings.conversation_model
+        self._eff_world_model: str = settings.world_agent_model
 
     async def start(self):
         async with AsyncSessionLocal() as db:
@@ -859,7 +1014,7 @@ class VillageEngine:
                 await db.commit()
         logger.info("VillageEngine paused.")
 
-    async def stop(self):
+    async def stop(self, persist: bool = True):
         if self._task:
             self._task.cancel()
             try:
@@ -868,11 +1023,12 @@ class VillageEngine:
                 pass
             self._task = None
 
-        async with AsyncSessionLocal() as db:
-            world = await _get_world_state(db)
-            if world:
-                world.engine_state = "stopped"
-                await db.commit()
+        if persist:
+            async with AsyncSessionLocal() as db:
+                world = await _get_world_state(db)
+                if world:
+                    world.engine_state = "stopped"
+                    await db.commit()
         logger.info("VillageEngine stopped.")
 
     async def step_once(self):
@@ -919,10 +1075,32 @@ class VillageEngine:
             if not world:
                 return
 
+            # 0. Refresh effective gateway + model config from DB overrides
+            gw = world.gateway_config
+            self._eff_url = (gw.get("url") or settings.aigateway_url).rstrip("/")
+            self._eff_token = gw.get("token") or settings.aigateway_token
+            self.world_agent.aigateway_url = self._eff_url
+            self.world_agent.token = self._eff_token
+            mc_result = await db.execute(select(ModelConfig))
+            for _mc in mc_result.scalars().all():
+                if _mc.task == "world_agent" and _mc.model_id:
+                    self._eff_world_model = _mc.model_id
+                elif _mc.task == "agent_brain" and _mc.model_id:
+                    self._eff_brain_model = _mc.model_id
+                elif _mc.task == "conversation" and _mc.model_id:
+                    self._eff_conv_model = _mc.model_id
+
             # 1. Advance game time
             world.tick += 1
-            world.game_hour = (world.game_hour + 1) % 24
-            if world.game_hour == 0:
+            hours_per_tick = float(world.sim_config.get("hours_per_tick", 1.0))
+            accum = (world.game_hour_accum or 0.0) + hours_per_tick
+            hours_to_advance = int(accum)
+            world.game_hour_accum = accum - hours_to_advance  # keep fractional remainder
+
+            prev_hour = world.game_hour
+            new_hour = prev_hour + hours_to_advance
+            world.game_hour = new_hour % 24
+            if new_hour >= 24:
                 world.game_day += 1
                 # Seasonal change every N days
                 if world.game_day % _DAYS_PER_SEASON == 0:
@@ -957,14 +1135,38 @@ class VillageEngine:
 
             # 5. Spontaneous conversations
             try:
-                await _check_conversations(agents, db, world)
+                await _check_conversations(agents, db, world, self)
             except Exception as exc:
                 logger.error("Conversation check error: %s", exc)
 
             # 6. Agent decisions (idle agents only)
+            # Auto-wake: sleeping agents get 1 tick of sleep state (rest already applied
+            # in full when the action ran), then return to idle.  Conversations get 2
+            # ticks of leeway before we treat them as stuck and force-idle.
+            for _a in agents:
+                ticks_stale = world.tick - (_a.last_tick or 0)
+                if _a.state == "sleeping" and ticks_stale >= 1:
+                    _a.state = "idle"
+                elif _a.state == "socializing" and ticks_stale >= 2:
+                    _a.state = "idle"
+                elif _a.state == "collapsed" and ticks_stale >= 4:
+                    # Slow recovery after collapse
+                    _a.state = "idle"
+                    needs = _a.needs
+                    needs["hunger"] = min(needs.get("hunger", 100), 70)
+                    needs["rest"] = min(needs.get("rest", 100), 60)
+                    _a.needs = needs
+                    _a.mood = compute_mood(needs)
+                    _a.add_memory("Slowly came back to consciousness. Still weak, but upright.")
+                    await _log_event(
+                        db, world, "collapse",
+                        f"{_a.name} recovered from collapse at ({_a.x},{_a.y}).",
+                        [_a.agent_id], _a.x, _a.y,
+                    )
+
             idle_agents = [
                 a for a in agents
-                if not a.travel_path and a.state not in ("socializing", "sleeping")
+                if not a.travel_path and a.state not in ("socializing", "sleeping", "collapsed")
             ]
             sem = asyncio.Semaphore(3)
             tasks = [
@@ -984,12 +1186,29 @@ class VillageEngine:
 
             # 8. Random world event
             try:
-                model = settings.world_agent_model
+                model = self._eff_world_model
                 await check_random_event(world, agents, db, self.world_agent, model)
             except Exception as exc:
                 logger.error("World event check error: %s", exc)
 
-            # 9. Save
+            # 8.5. Creature movement
+            try:
+                from app.creatures import process_creatures
+                creatures_result = await db.execute(select(Creature))
+                creatures = list(creatures_result.scalars().all())
+                if creatures:
+                    tiles_result = await db.execute(select(Tile))
+                    tiles_map_dict = {
+                        f"{t.x},{t.y}": {"terrain": t.terrain}
+                        for t in tiles_result.scalars().all()
+                    }
+                    await process_creatures(creatures, agents, tiles_map_dict, world, db)
+            except Exception as exc:
+                logger.error("Creature processing error: %s", exc)
+
+            # 9. Save + snapshot
+            world.last_tick_at = _time.time()
+            await _save_tick_snapshot(db, world, agents)
             await db.commit()
 
             # 10. Broadcast SSE

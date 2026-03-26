@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from app.config import settings
@@ -145,10 +147,28 @@ async def _generate_starting_camp(db):
 # Lifespan
 # ---------------------------------------------------------------------------
 
+async def _migrate_db():
+    """Lightweight migrations for columns added after initial deploy."""
+    from app.database import engine as _engine
+    from sqlalchemy import text
+    async with _engine.begin() as conn:
+        for stmt in [
+            "ALTER TABLE world_state ADD COLUMN last_tick_at REAL",
+            "ALTER TABLE world_state ADD COLUMN _sim_config TEXT DEFAULT '{}'",
+            "ALTER TABLE world_state ADD COLUMN _gateway_config TEXT DEFAULT '{}'",
+            "ALTER TABLE village_agents ADD COLUMN goal_set_tick INTEGER DEFAULT 0",
+        ]:
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                pass  # column already exists
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
+    await _migrate_db()
     await _init_world_state()
 
     # Import here to avoid circular on startup
@@ -167,9 +187,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
+    # Shutdown — don't persist state so engine auto-resumes on next start
     from app.engine import engine as eng
-    await eng.stop()
+    await eng.stop(persist=False)
     logger.info("VillageService shutdown complete.")
 
 
@@ -203,6 +223,14 @@ app.include_router(admin_router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "VillageService"}
+
+
+@app.get("/", include_in_schema=False)
+async def serve_index():
+    return FileResponse("static/index.html")
+
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 if __name__ == "__main__":

@@ -33,10 +33,16 @@ def _mood_description(mood: float) -> str:
 
 
 def _needs_summary(needs: dict) -> str:
+    def _status(v):
+        if v < 30: return "fine"
+        if v < 55: return "moderate"
+        if v < 72: return "noticeable"
+        if v < 85: return "pressing"
+        return "URGENT"
     parts = []
     for key, label in [("hunger", "Hunger"), ("rest", "Rest"), ("warmth", "Warmth"), ("social", "Social")]:
         val = needs.get(key, 0)
-        parts.append(f"{label}: {int(val)}%")
+        parts.append(f"{label}: {int(val)}% ({_status(val)})")
     return "  ".join(parts)
 
 
@@ -58,7 +64,11 @@ def _format_visible_tiles(visible_tiles: list[dict]) -> str:
         buildings = [b.get("type", "") for b in t.get("buildings", [])]
         detail_parts = []
         if features:
-            detail_parts.append("features: " + ", ".join(features))
+            feature_str = ", ".join(features)
+            # Highlight lootable ruins distinctly
+            if "ruins" in features and "ruins_looted" not in features:
+                feature_str += " [LOOTABLE]"
+            detail_parts.append("features: " + feature_str)
         if resources:
             detail_parts.append("resources: " + ", ".join(resources))
         if buildings:
@@ -75,7 +85,8 @@ def _format_nearby_agents(nearby: list[dict]) -> str:
     for a in nearby[:6]:
         name = a.get("name", "?")
         state = a.get("state", "idle")
-        lines.append(f"  {name} at ({a.get('x',0)},{a.get('y',0)}) — {state}")
+        state_note = " [COLLAPSED — needs help!]" if state == "collapsed" else ""
+        lines.append(f"  {name} at ({a.get('x',0)},{a.get('y',0)}) — {state}{state_note}")
     return "\n".join(lines)
 
 
@@ -142,10 +153,17 @@ class AgentBrain:
         system_prompt = f"""\
 You are {agent.name}. {agent.personality_summary}
 
-You are living in a real world, trying to build a life. You have genuine needs.
-This is not a simulation or test. Do what you would actually do.
-Your personality shapes HOW you act, not whether you act sensibly.
-Survival matters. Relationships matter. Curiosity matters.
+You are living in a real world, building a life in a new settlement.
+Your needs are physical realities — but most of the time they are *fine*. You don't
+obsess over food when you're not hungry. You don't chase rest when you're not tired.
+Needs only become urgent above 72%. Below that, they are background noise.
+
+When your needs are comfortable, your mind is free for the things that actually matter:
+exploring, building, crafting, forming relationships, pursuing long-term goals.
+A rich life is built between meals — not spent waiting for the next one.
+
+Your personality shapes everything: how you explore, what you build, how you treat others.
+Be yourself. Think in months, not minutes.
 """
 
         user_prompt = f"""\
@@ -166,7 +184,15 @@ YOUR INVENTORY:
 
 CRAFTABLE RIGHT NOW: {craftable_str}
 
-CURRENT GOAL: {agent.current_goal or "None — decide what matters to you"}
+CURRENT GOAL: {agent.current_goal or "None — decide what matters to you"}{
+  f" (set {world_state.tick - agent.goal_set_tick} ticks ago)" if agent.current_goal and agent.goal_set_tick else ""
+}{
+  "\n⚠ Your needs are all comfortable and this goal is more than 20 ticks old. Is it still what you want? Consider using set_goal to redefine what matters to you right now."
+  if agent.current_goal
+     and (world_state.tick - agent.goal_set_tick) > 20
+     and all(v < 50 for v in agent.needs.values())
+  else ""
+}
 
 RECENT MEMORY:
 {_format_memory(agent.village_memory)}{god_hint_block}
@@ -182,6 +208,7 @@ Valid actions (respond with ONLY valid JSON, one action):
 {{"action":"speak","target":"agent_name_or_broadcast","message":"...","thought":"..."}}
 {{"action":"rest","hours":1,"thought":"..."}}
 {{"action":"examine","target":"description","thought":"..."}}
+{{"action":"loot","thought":"..."}}  ← only valid if current tile has "ruins" feature
 {{"action":"write","content":"...","medium":"note","thought":"..."}}
 {{"action":"set_goal","goal":"...","thought":"..."}}
 {{"action":"wait","thought":"..."}}
@@ -198,7 +225,7 @@ Valid actions (respond with ONLY valid JSON, one action):
                 "model": model,
                 "messages": messages,
                 "stream": False,
-                "max_tokens": 150,
+                "max_tokens": 400,
                 "temperature": 0.9,
             }
             async with httpx.AsyncClient(timeout=25.0) as client:
@@ -243,7 +270,7 @@ Valid actions (respond with ONLY valid JSON, one action):
         # Validate action field
         valid_actions = {
             "move", "gather", "eat", "craft", "build", "speak",
-            "rest", "examine", "write", "set_goal", "wait",
+            "rest", "examine", "loot", "write", "set_goal", "wait",
         }
         if action.get("action") not in valid_actions:
             logger.warning("AgentBrain: unknown action %r, defaulting to wait", action.get("action"))

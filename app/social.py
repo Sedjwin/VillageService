@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 
 _CONVERSATION_SYSTEM = """\
 You are playing yourself in a conversation. Respond as your character would —
-naturally, briefly, in-voice. 1-3 sentences. No stage directions. No asterisks.
-This is a real exchange between two people who exist in the same world.
+naturally, in-voice. 2-4 sentences. No stage directions, no asterisks, no
+emote-descriptions. This is a real exchange between two people in the same world.
+Always finish your thought completely — never trail off mid-sentence.
 """
 
 
@@ -63,7 +64,7 @@ Your mood: {_mood_word(speaking_agent.mood)}
 Conversation so far:
 {history_str}
 
-What do you say next? (1-3 sentences, in character, no prefix)"""
+What do you say next? (in character, no name prefix, finish every sentence)"""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -75,7 +76,7 @@ What do you say next? (1-3 sentences, in character, no prefix)"""
         "model": model,
         "messages": messages,
         "stream": False,
-        "max_tokens": 120,
+        "max_tokens": 400,
         "temperature": 0.95,
     }
 
@@ -186,11 +187,11 @@ async def run_conversation(
     convo.messages = messages
     convo.completed = True
 
-    # Update memories
-    summary_a = f"Spoke with {agent_b.name}: \"{messages[0]['text'][:60]}...\""
-    summary_b = f"Spoke with {agent_a.name}: \"{messages[0]['text'][:60]}...\""
-    agent_a.add_memory(summary_a)
-    agent_b.add_memory(summary_b)
+    # Store full conversation transcript in each agent's village memory
+    day_time = f"Day {world_state.game_day} {world_state.game_hour:02d}:00"
+    turns = "; ".join(f"{m['name']}: \"{m['text']}\"" for m in messages)
+    agent_a.add_memory(f"[{day_time}] Spoke with {agent_b.name}: {turns}")
+    agent_b.add_memory(f"[{day_time}] Spoke with {agent_a.name}: {turns}")
 
     # Update relationships
     _update_relationship(agent_a, agent_b.agent_id, relationship_delta)

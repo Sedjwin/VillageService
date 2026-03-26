@@ -52,7 +52,8 @@ async def check_random_event(
     """
     Called each tick. Small chance to trigger a world event.
     """
-    if random.random() > _EVENT_BASE_CHANCE:
+    event_chance = _EVENT_BASE_CHANCE * world_state.sim_config.get("event_chance", 1.0)
+    if random.random() > event_chance:
         return
 
     # Weighted random selection

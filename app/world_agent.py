@@ -112,6 +112,8 @@ Generate the tile at grid position ({x}, {y}).
 Consider what would naturally exist here given the surroundings.
 Be consistent with adjacent terrain. Allow gradual transitions.
 Place resources that make sense for the terrain.
+Occasionally (roughly 1 in 12 tiles) include "ruins" in features — crumbled structures,
+old foundations, collapsed walls. They hint at prior habitation and can be looted.
 
 Respond in this exact JSON format:
 {{
@@ -249,6 +251,66 @@ Respond in JSON:
         except Exception as exc:
             logger.error("WorldAgent.generate_world_event failed: %s", exc)
             return None
+
+    async def generate_ruins_loot(
+        self,
+        agent_name: str,
+        personality: str,
+        tile_narrative: str,
+        world_bible: str,
+        model: str,
+    ) -> dict:
+        """
+        Generate loot for an agent searching ruins on a tile.
+        Returns {"items": {item_type: qty, ...}, "narrative": str}
+        """
+        bible_ctx = world_bible[:200] if world_bible else "A land with a forgotten past."
+        tile_ctx = tile_narrative[:150] if tile_narrative else "Crumbled stonework, half-buried."
+
+        prompt = f"""\
+{agent_name} is searching through ruins.
+The ruins: {tile_ctx}
+World context: {bible_ctx}
+Agent character: {personality[:150]}
+
+What do they find? Something that was left behind — tools, scraps, written fragments,
+partial useful objects. Keep it grounded. 2-4 items. Modest quantities.
+
+Available item types: sharp_rock, long_stick, rope, vine, tinder, raw_food,
+paper, charcoal, note, knife, torch, axe, fishing_rod.
+
+Respond in this exact JSON format:
+{{
+  "items": {{"item_type": qty}},
+  "narrative": "<1-2 sentences describing what they found and the mood of the discovery>"
+}}"""
+
+        messages = [
+            {"role": "system", "content": _WORLD_WEAVER_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            raw = await self._call_llm(messages, model, max_tokens=200)
+            data = self._extract_json(raw)
+            items = {str(k): max(1, int(v)) for k, v in data.get("items", {}).items()}
+            return {
+                "items": items,
+                "narrative": data.get(
+                    "narrative",
+                    "Digging through the rubble turned up a few useful things.",
+                ),
+            }
+        except Exception as exc:
+            logger.error("WorldAgent.generate_ruins_loot failed: %s", exc)
+            # Procedural fallback
+            return {
+                "items": {
+                    random.choice(["sharp_rock", "long_stick", "rope", "tinder"]): random.randint(1, 2),
+                    random.choice(["vine", "paper", "charcoal"]): 1,
+                },
+                "narrative": "Old stone and splinters — not much, but enough.",
+            }
 
     async def narrate_action(
         self,
