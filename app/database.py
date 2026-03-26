@@ -32,6 +32,7 @@ async def init_db():
         # Additive column migrations (safe to re-run — duplicate column errors are ignored)
         migrations = [
             "ALTER TABLE world_state ADD COLUMN game_hour_accum REAL DEFAULT 0.0",
+            "ALTER TABLE village_agents ADD COLUMN goal_resource_brief TEXT",
         ]
         for sql in migrations:
             try:

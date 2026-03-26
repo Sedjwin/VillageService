@@ -521,9 +521,18 @@ async def _execute_action(
         await _action_write(agent, action, db, world, tiles_map)
 
     elif act == "set_goal":
-        agent.current_goal = action.get("goal", "")
+        goal_text = action.get("goal", "")
+        agent.current_goal = goal_text
         agent.goal_set_tick = world.tick
         agent.add_memory(f"Set new goal: {agent.current_goal}")
+        # Fire-and-forget: generate resource brief in background
+        if goal_text and hasattr(engine, 'world_agent') and engine.world_agent:
+            import asyncio as _asyncio
+            _asyncio.create_task(
+                _update_goal_resource_brief(
+                    agent.agent_id, agent.name, goal_text, agent.inventory, engine
+                )
+            )
 
     elif act == "wait":
         agent.state = "idle"
@@ -536,6 +545,29 @@ async def _execute_action(
 # ---------------------------------------------------------------------------
 # Action implementations
 # ---------------------------------------------------------------------------
+
+async def _update_goal_resource_brief(agent_id: str, agent_name: str, goal: str, inventory: dict, engine_ref) -> None:
+    """Background task: generate a resource brief for the agent's new goal and persist it."""
+    from app.crafting import RECIPES
+    try:
+        brief = await engine_ref.world_agent.get_resource_brief(
+            agent_name=agent_name,
+            agent_goal=goal,
+            agent_inventory=inventory,
+            item_catalog=RECIPES,
+            model=engine_ref._eff_world_model,
+        )
+        if not brief:
+            return
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(VillageAgent).where(VillageAgent.agent_id == agent_id))
+            agent = result.scalar_one_or_none()
+            if agent:
+                agent.goal_resource_brief = brief.strip()
+                await db.commit()
+    except Exception as exc:
+        logger.error("_update_goal_resource_brief failed: %s", exc)
+
 
 async def _action_move(
     agent: VillageAgent,

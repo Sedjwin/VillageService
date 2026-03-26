@@ -152,6 +152,22 @@
     #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(3,7,18,.8); z-index: 10; flex-direction: column; gap: 10px; color: #6b7280; font-size: 12px; }
     .spinner { width: 28px; height: 28px; border: 2px solid #1f2937; border-top-color: #6b7280; border-radius: 50%; animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Context menu ─────────────────────────────────────────────────────────── */
+    #ctx-menu { position:fixed; z-index:100; background:#111827; border:1px solid #374151; border-radius:6px; min-width:190px; box-shadow:0 4px 20px rgba(0,0,0,.6); display:none; overflow:hidden; }
+    .ctx-section { padding:4px 0; border-bottom:1px solid #1f2937; }
+    .ctx-section:last-child { border-bottom:none; }
+    .ctx-header { font-size:10px; text-transform:uppercase; letter-spacing:.07em; color:#4b5563; padding:5px 12px 2px; }
+    .ctx-item { display:flex; align-items:center; gap:8px; padding:5px 12px; font-size:11px; color:#d1d5db; cursor:pointer; transition:background .1s; white-space:nowrap; }
+    .ctx-item:hover { background:#1f2937; }
+    .ctx-item.admin { color:#f59e0b; }
+    .ctx-item.danger { color:#f87171; }
+    .ctx-sep { height:1px; background:#1f2937; margin:2px 0; }
+    /* ── Inspector tile extras ─────────────────────────────────────────────────── */
+    .insp-feat-tag { display:inline-block; background:rgba(31,41,55,.7); border:1px solid #374151; border-radius:3px; font-size:10px; color:#9ca3af; padding:1px 5px; margin:1px 2px; text-transform:capitalize; }
+    .insp-bld-row { font-size:11px; color:#60a5fa; padding:2px 0; }
+    .insp-item-row { font-size:11px; color:#d1d5db; padding:2px 0; border-bottom:1px solid rgba(31,41,55,.3); }
+    .insp-note-content { font-size:10px; color:#6b7280; font-style:italic; padding:2px 6px 4px; line-height:1.4; }
   </style>
 </head>
 <body>
@@ -380,6 +396,7 @@
     <div id="canvas-wrap">
       <div id="loading"><div class="spinner"></div>Loading world…</div>
       <canvas id="canvas"></canvas>
+      <div id="ctx-menu"></div>
       <div id="zoom-pct">150%</div>
       <div id="zoom-ctrl">
         <button id="zoom-in">+</button>
@@ -448,6 +465,7 @@ let selectedTile  = null
 let camera = { x: 0, y: 0, zoom: 1.5 }
 let drag = null, touch = null
 let authToken = null
+let isAdmin = false
 
 // ── Canvas ──────────────────────────────────────────────────────────────────
 const canvas  = document.getElementById('canvas')
@@ -883,7 +901,186 @@ canvas.addEventListener('touchend', e => {
   }
   touch = null
 })
+
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault()
+  const rect = canvas.getBoundingClientRect()
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top
+  const TS = 32 * camera.zoom
+  const tx = Math.floor((mx + camera.x) / TS)
+  const ty = Math.floor((my + camera.y) / TS)
+  showCtxMenu(e.clientX, e.clientY, tx, ty)
+})
+
+document.addEventListener('click', e => {
+  const menu = document.getElementById('ctx-menu')
+  if (menu && !menu.contains(e.target)) hideCtxMenu()
+})
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtxMenu() })
+
 function dist2(touches) { return Math.hypot(touches[0].clientX-touches[1].clientX, touches[0].clientY-touches[1].clientY) }
+
+// ── Context menu ──────────────────────────────────────────────────────────────
+function hideCtxMenu() {
+  document.getElementById('ctx-menu').style.display = 'none'
+}
+
+function showCtxMenu(cx, cy, tx, ty) {
+  const menu = document.getElementById('ctx-menu')
+  const agents = historyMode && historySnap ? historySnap.agents : liveAgents
+  const tile = liveTiles[`${tx},${ty}`]
+  const agentsHere = agents.filter(a => a.x === tx && a.y === ty)
+  const creaturesHere = liveCreatures ? liveCreatures.filter(c => c.x === tx && c.y === ty) : []
+  const buildings = tile?.buildings || []
+  const items = tile?.items || []
+
+  let html = ''
+
+  // --- Tile section ---
+  const tc = { grass:'#4ade80', light_forest:'#22c55e', dense_forest:'#16a34a', hills:'#ca8a04', mountain:'#9ca3af', water:'#60a5fa', beach:'#fde047', cave:'#6b7280', road:'#d97706' }[tile?.terrain] || '#9ca3af'
+  html += `<div class="ctx-section">
+    <div class="ctx-header" style="color:${tc}">${tile ? tile.terrain.replace(/_/g,' ') : 'unexplored'} (${tx}, ${ty})</div>
+    <div class="ctx-item" onclick="selectTileAt(${tx},${ty});hideCtxMenu()">🗺 Inspect tile</div>`
+  if (isAdmin) {
+    html += `<div class="ctx-item admin" onclick="adminChangeTerrain(${tx},${ty});hideCtxMenu()">✏ Change terrain</div>`
+    html += `<div class="ctx-item admin" onclick="adminAddItem(${tx},${ty});hideCtxMenu()">＋ Add item to tile</div>`
+  }
+  html += `</div>`
+
+  // --- Agent sections ---
+  for (const a of agentsHere) {
+    const col = a.avatar_config?.primary_color || '#4a9eff'
+    html += `<div class="ctx-section">
+      <div class="ctx-header" style="color:${col}">● ${a.name}</div>
+      <div class="ctx-item" onclick="selectAgent('${a.agent_id}');hideCtxMenu()">👤 Inspect agent</div>`
+    if (isAdmin) {
+      html += `<div class="ctx-item admin" onclick="adminSetGoal('${a.agent_id}','${a.name}');hideCtxMenu()">🎯 Set goal</div>`
+      html += `<div class="ctx-item admin" onclick="adminGiveItem('${a.agent_id}','${a.name}');hideCtxMenu()">🎁 Give item</div>`
+      html += `<div class="ctx-item admin" onclick="adminTeleportTo('${a.agent_id}',${tx},${ty});hideCtxMenu()">📍 Teleport here</div>`
+    }
+    html += `</div>`
+  }
+
+  // --- Building sections ---
+  for (const b of buildings) {
+    html += `<div class="ctx-section">
+      <div class="ctx-header">🏗 ${(b.type||'building').replace(/_/g,' ')}</div>`
+    if (isAdmin) {
+      html += `<div class="ctx-item danger" onclick="adminRemoveBuilding(${tx},${ty},'${b.type}');hideCtxMenu()">✕ Remove</div>`
+    } else {
+      html += `<div class="ctx-item" onclick="selectTileAt(${tx},${ty});hideCtxMenu()">ℹ Inspect</div>`
+    }
+    html += `</div>`
+  }
+
+  // --- Item sections ---
+  for (const it of items) {
+    const label = (it.type||'item').replace(/_/g,' ')
+    html += `<div class="ctx-section">
+      <div class="ctx-header">📦 ${label} ×${it.qty||1}${it.author ? ' ('+it.author+')' : ''}</div>`
+    if (it.content) {
+      html += `<div class="ctx-item" onclick="showNoteContent('${encodeURIComponent(it.content||'')}');hideCtxMenu()">📄 Read note</div>`
+    }
+    if (isAdmin) {
+      html += `<div class="ctx-item danger" onclick="adminRemoveItem(${tx},${ty},'${it.type}');hideCtxMenu()">✕ Remove</div>`
+    }
+    html += `</div>`
+  }
+
+  // --- Creature sections ---
+  for (const c of creaturesHere) {
+    html += `<div class="ctx-section">
+      <div class="ctx-header">🐾 ${(c.creature_type||'creature').replace(/_/g,' ')} (${c.state})</div>`
+    if (isAdmin) {
+      html += `<div class="ctx-item danger" onclick="adminRemoveCreature('${c.id}');hideCtxMenu()">✕ Remove</div>`
+    }
+    html += `</div>`
+  }
+
+  if (!html) {
+    html = '<div class="ctx-section"><div class="ctx-item" style="color:#4b5563">Nothing here</div></div>'
+  }
+
+  menu.innerHTML = html
+  menu.style.display = 'block'
+
+  // Position menu — flip if too close to edge
+  const vw = window.innerWidth, vh = window.innerHeight
+  const mw = 200, mh = menu.scrollHeight || 300
+  let left = cx + 2, top = cy + 2
+  if (left + mw > vw) left = cx - mw - 2
+  if (top + mh > vh) top = cy - mh - 2
+  menu.style.left = left + 'px'
+  menu.style.top  = top + 'px'
+}
+
+function selectTileAt(tx, ty) {
+  selectedAgent = null
+  selectedTile = liveTiles[`${tx},${ty}`] || null
+  renderInspector()
+}
+
+function showNoteContent(encoded) {
+  const content = decodeURIComponent(encoded)
+  alert('Note contents:\n\n' + content)
+}
+
+// Admin context actions
+async function adminChangeTerrain(tx, ty) {
+  const terrains = ['grass','light_forest','dense_forest','hills','mountain','water','beach','cave','road']
+  const cur = liveTiles[`${tx},${ty}`]?.terrain || 'grass'
+  const choice = prompt(`Change terrain at (${tx},${ty})\nOptions: ${terrains.join(', ')}\nCurrent: ${cur}`)
+  if (!choice || !terrains.includes(choice)) return
+  const token = localStorage.getItem('village_token')
+  await fetch(`/village/tiles/${tx}/${ty}`, { method:'PATCH', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({terrain:choice}) })
+}
+
+async function adminAddItem(tx, ty) {
+  const item = prompt(`Add item to (${tx},${ty})\nItem type (e.g. wood, rope, berries):`)
+  if (!item) return
+  const qty = parseInt(prompt('Quantity:', '1') || '1')
+  const token = localStorage.getItem('village_token')
+  await fetch(`/village/tiles/${tx}/${ty}`, { method:'PATCH', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({add_item:item, add_item_qty:qty}) })
+}
+
+async function adminRemoveItem(tx, ty, itemType) {
+  if (!confirm(`Remove all ${itemType} from (${tx},${ty})?`)) return
+  const token = localStorage.getItem('village_token')
+  await fetch(`/village/tiles/${tx}/${ty}`, { method:'PATCH', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({remove_item:itemType}) })
+}
+
+async function adminRemoveBuilding(tx, ty, bType) {
+  if (!confirm(`Remove ${bType} at (${tx},${ty})?`)) return
+  const token = localStorage.getItem('village_token')
+  // Remove from tile features (buildings are tracked separately but removing the feature achieves the visual)
+  await fetch(`/village/tiles/${tx}/${ty}`, { method:'PATCH', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({remove_feature:bType}) })
+}
+
+async function adminSetGoal(agentId, agentName) {
+  const goal = prompt(`Set goal for ${agentName}:`)
+  if (!goal) return
+  const token = localStorage.getItem('village_token')
+  await fetch(`/village/agents/${agentId}/goal`, { method:'PATCH', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({goal}) })
+}
+
+async function adminGiveItem(agentId, agentName) {
+  const item = prompt(`Give item to ${agentName}:\nItem type:`)
+  if (!item) return
+  const qty = parseInt(prompt('Quantity:', '1') || '1')
+  const token = localStorage.getItem('village_token')
+  await fetch(`/village/agents/${agentId}/give`, { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({item, qty}) })
+}
+
+async function adminTeleportTo(agentId, tx, ty) {
+  const token = localStorage.getItem('village_token')
+  await fetch(`/village/agents/${agentId}/teleport`, { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({x:tx, y:ty}) })
+}
+
+async function adminRemoveCreature(creatureId) {
+  if (!confirm('Remove this creature?')) return
+  const token = localStorage.getItem('village_token')
+  await fetch(`/village/creatures/${creatureId}`, { method:'DELETE', headers:{'Authorization':'Bearer '+token} })
+}
 
 function handleClick(cx, cy) {
   const rect = canvas.getBoundingClientRect()
@@ -987,14 +1184,39 @@ function renderInspector() {
     `
   } else if (selectedTile) {
     const t = selectedTile
-    const tc = { grass:'#4ade80', light_forest:'#22c55e', dense_forest:'#16a34a', hills:'#ca8a04', mountain:'#9ca3af', water:'#60a5fa', beach:'#fde047', cave:'#6b7280' }[t.terrain] || '#9ca3af'
+    const tc = { grass:'#4ade80', light_forest:'#22c55e', dense_forest:'#16a34a', hills:'#ca8a04', mountain:'#9ca3af', water:'#60a5fa', beach:'#fde047', cave:'#6b7280', road:'#d97706' }[t.terrain] || '#9ca3af'
     const res = (t.resource_nodes||[]).filter(r=>r.qty>0)
+    const feats = (t.features||[]).filter(f=>f)
+    const buildings = (t.buildings||[])
+    const items = (t.items||[])
+
+    const featHtml = feats.length > 0
+      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Features</div><div>${feats.map(f=>`<span class="insp-feat-tag">${f.replace(/_/g,' ')}</span>`).join('')}</div></div>`
+      : ''
+
+    const resHtml = res.length > 0
+      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Resources</div>${res.map(r=>`<div class="insp-row"><span class="insp-val" style="text-transform:capitalize">${r.type.replace(/_/g,' ')}</span><span style="color:#4b5563;font-size:10px;margin-left:auto">${r.qty}/${r.max_qty}</span></div>`).join('')}</div>`
+      : ''
+
+    const bldHtml = buildings.length > 0
+      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Buildings</div>${buildings.map(b=>`<div class="insp-bld-row">🏗 ${(b.type||'?').replace(/_/g,' ')}${b.built_by ? ' <span style="color:#4b5563;font-size:10px">by '+b.built_by+'</span>' : ''}</div>`).join('')}</div>`
+      : ''
+
+    const itemHtml = items.length > 0
+      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Items on ground</div>${items.map(it => {
+          const label = (it.type||'?').replace(/_/g,' ')
+          const author = it.author ? ` <span style="color:#4b5563;font-size:10px">(${it.author})</span>` : ''
+          const noteContent = it.content ? `<div class="insp-note-content">"${it.content}"</div>` : ''
+          return `<div class="insp-item-row">${label} ×${it.qty||1}${author}${noteContent}</div>`
+        }).join('')}</div>`
+      : ''
+
     el.innerHTML = `
-      <div class="insp-title">${t.x}, ${t.y}</div>
-      <div class="insp-row"><span class="insp-label">Terrain</span><span class="insp-val" style="color:${tc};text-transform:capitalize">${t.terrain}</span></div>
+      <div class="insp-title">(${t.x}, ${t.y})</div>
+      <div class="insp-row"><span class="insp-label">Terrain</span><span class="insp-val" style="color:${tc};text-transform:capitalize">${t.terrain.replace(/_/g,' ')}</span></div>
       <div class="insp-row"><span class="insp-label">Elevation</span><span class="insp-val">${t.elevation}</span></div>
       ${t.narrative ? `<div class="insp-goal" style="margin-top:5px;font-style:italic;color:#6b7280">${t.narrative}</div>` : ''}
-      ${res.length > 0 ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Resources</div>${res.map(r=>`<div class="insp-row"><span class="insp-val" style="text-transform:capitalize">${r.type.replace(/_/g,' ')}</span><span style="color:#4b5563;font-size:10px;margin-left:auto">${r.qty}/${r.max_qty}</span></div>`).join('')}</div>` : ''}
+      ${featHtml}${resHtml}${bldHtml}${itemHtml}
     `
   } else {
     el.innerHTML = '<div class="placeholder">Click a tile or agent to inspect</div>'
@@ -1155,6 +1377,7 @@ function connectSSE() {
 // ── Auth ─────────────────────────────────────────────────────────────────────
 function initAuth() {
   authToken = localStorage.getItem('village_token') || null
+  if (authToken) isAdmin = true
   updateAuthUI()
   if (authToken) loadAdminPanel()
 }
@@ -1201,6 +1424,7 @@ async function doLogin() {
     const d = await r.json()
     if (d.role !== 'admin') { errEl.textContent = 'Admin role required'; return }
     authToken = d.access_token
+    isAdmin = true
     localStorage.setItem('village_token', authToken)
     toggleLoginModal()
     updateAuthUI()
@@ -1212,6 +1436,7 @@ async function doLogin() {
 
 function logout() {
   authToken = null
+  isAdmin = false
   localStorage.removeItem('village_token')
   updateAuthUI()
 }

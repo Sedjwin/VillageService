@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.models import EventLog, ModelConfig, Tile, VillageAgent, WorldState
+from app.models import Creature, EventLog, ModelConfig, Tile, VillageAgent, WorldState
 from app.schemas import SpawnConfirmToken, agent_to_out, world_to_out
 from app.sse import sse_manager
 
@@ -119,6 +119,19 @@ class RelationshipUpdate(BaseModel):
 class GatewayConfigUpdate(BaseModel):
     url: str | None = None
     token: str | None = None
+
+
+class TilePatchRequest(BaseModel):
+    terrain: str | None = None
+    add_feature: str | None = None
+    remove_feature: str | None = None
+    add_item: str | None = None
+    add_item_qty: int = 1
+    remove_item: str | None = None
+
+
+class GoalOverrideRequest(BaseModel):
+    goal: str
 
 
 # ---------------------------------------------------------------------------
@@ -780,6 +793,103 @@ async def _fetch_agent_info(agent_id: str) -> dict:
 
     logger.warning("Could not fetch agent info for %s — using defaults.", agent_id)
     return {"name": agent_id, "personality_summary": "", "description": ""}
+
+
+# ---------------------------------------------------------------------------
+# Tile admin
+# ---------------------------------------------------------------------------
+
+@router.patch("/tiles/{x}/{y}")
+async def patch_tile(
+    x: int,
+    y: int,
+    body: TilePatchRequest,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(Tile).where(Tile.x == x, Tile.y == y))
+    tile = result.scalar_one_or_none()
+    if not tile:
+        raise HTTPException(status_code=404, detail="Tile not found.")
+
+    if body.terrain:
+        from app.crafting import TERRAIN_MOVEMENT_COST
+        if body.terrain not in TERRAIN_MOVEMENT_COST:
+            raise HTTPException(status_code=400, detail=f"Unknown terrain: {body.terrain}")
+        tile.terrain = body.terrain
+
+    if body.add_feature:
+        feats = tile.features
+        if body.add_feature not in feats:
+            feats.append(body.add_feature)
+        tile.features = feats
+
+    if body.remove_feature:
+        feats = tile.features
+        tile.features = [f for f in feats if f != body.remove_feature]
+
+    if body.add_item:
+        items = tile.items
+        for it in items:
+            if it.get("type") == body.add_item:
+                it["qty"] = it.get("qty", 0) + body.add_item_qty
+                break
+        else:
+            items.append({"type": body.add_item, "qty": body.add_item_qty})
+        tile.items = items
+
+    if body.remove_item:
+        items = tile.items
+        tile.items = [it for it in items if it.get("type") != body.remove_item]
+
+    await db.commit()
+    from app.schemas import tile_to_out
+    return tile_to_out(tile).model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Agent goal override
+# ---------------------------------------------------------------------------
+
+@router.patch("/agents/{agent_id}/goal")
+async def override_agent_goal(
+    agent_id: str,
+    body: GoalOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(VillageAgent).where(VillageAgent.agent_id == agent_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    agent.current_goal = body.goal
+    from app.models import WorldState
+    ws_result = await db.execute(select(WorldState).where(WorldState.id == 1))
+    world = ws_result.scalar_one_or_none()
+    if world:
+        agent.goal_set_tick = world.tick
+    agent.goal_resource_brief = None  # clear old brief; will regenerate on next tick
+    agent.add_memory(f"[Admin] Goal set to: {body.goal}")
+    await db.commit()
+    return {"agent_id": agent_id, "goal": agent.current_goal}
+
+
+# ---------------------------------------------------------------------------
+# Creature admin
+# ---------------------------------------------------------------------------
+
+@router.delete("/creatures/{creature_id}", status_code=204)
+async def delete_creature(
+    creature_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(Creature).where(Creature.id == creature_id))
+    creature = result.scalar_one_or_none()
+    if not creature:
+        raise HTTPException(status_code=404, detail="Creature not found.")
+    await db.delete(creature)
+    await db.commit()
 
 
 def _derive_avatar_config(agent_data: dict) -> dict:

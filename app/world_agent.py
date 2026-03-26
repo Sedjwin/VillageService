@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import re
 from typing import Any
@@ -38,6 +39,61 @@ Each entry is 1-2 sentences. Past tense. Specific. No purple prose.
 Capture what happened and why it matters to the agent.
 Respond with only the log entry text — no JSON, no prefix.
 """
+
+# ---------------------------------------------------------------------------
+# Coherent terrain generation via value noise
+# ---------------------------------------------------------------------------
+
+def _hash2(ix: int, iy: int, seed: int) -> float:
+    """Deterministic pseudo-random float [0,1) from integer grid coords."""
+    h = (ix * 1619 + iy * 31337 + seed * 6271) ^ (ix * 73856093 ^ iy * 19349663)
+    return ((h & 0x7FFFFFFF) % 1_000_000) / 1_000_000.0
+
+
+def _smooth_noise(x: float, y: float, seed: int) -> float:
+    """Bilinearly-interpolated value noise at real-valued position."""
+    ix, iy = int(math.floor(x)), int(math.floor(y))
+    fx, fy = x - ix, y - iy
+    # Smoothstep
+    ux = fx * fx * (3.0 - 2.0 * fx)
+    uy = fy * fy * (3.0 - 2.0 * fy)
+    v00 = _hash2(ix,     iy,     seed)
+    v10 = _hash2(ix + 1, iy,     seed)
+    v01 = _hash2(ix,     iy + 1, seed)
+    v11 = _hash2(ix + 1, iy + 1, seed)
+    return v00*(1-ux)*(1-uy) + v10*ux*(1-uy) + v01*(1-ux)*uy + v11*ux*uy
+
+
+def _terrain_from_noise(x: int, y: int) -> str:
+    """
+    Return a terrain type for (x, y) using two-octave value noise.
+    Two layers: elevation (determines height) + moisture (determines wet/dry).
+    Biome clumps span ~15-20 tiles naturally.
+    """
+    freq1, freq2 = 0.055, 0.09
+    elev  = 0.65 * _smooth_noise(x * freq1, y * freq1, 1337) \
+          + 0.35 * _smooth_noise(x * freq2, y * freq2, 2718)
+    moist = 0.65 * _smooth_noise(x * freq1, y * freq1, 9999) \
+          + 0.35 * _smooth_noise(x * freq2, y * freq2, 4242)
+
+    if elev > 0.80:
+        return "mountain"
+    if elev > 0.70:
+        return "cave" if moist > 0.55 else "hills"
+    if elev > 0.58:
+        return "light_forest" if moist > 0.50 else "hills"
+    if elev > 0.42:
+        if moist > 0.62:
+            return "dense_forest"
+        if moist > 0.38:
+            return "light_forest"
+        return "grass"
+    if elev > 0.28:
+        return "dense_forest" if moist > 0.58 else "grass"
+    # Low ground
+    if moist > 0.50:
+        return "water"
+    return "beach"
 
 
 class WorldAgent:
@@ -105,20 +161,27 @@ class WorldAgent:
 
         bible_ctx = f"\nWorld context:\n{world_bible[:400]}" if world_bible else ""
 
+        # Pre-determine terrain type via noise for coherent biomes
+        terrain_type = _terrain_from_noise(x, y)
+        # Elevation hint from noise (0–10 scale)
+        raw_elev = 0.65 * _smooth_noise(x * 0.055, y * 0.055, 1337) \
+                 + 0.35 * _smooth_noise(x * 0.09,  y * 0.09,  2718)
+        elev_hint = int(raw_elev * 10)
+
         prompt = f"""\
 Generate the tile at grid position ({x}, {y}).
+Terrain type: {terrain_type} (elevation hint: {elev_hint}/10)
 {adj_summary}{bible_ctx}
 
-Consider what would naturally exist here given the surroundings.
-Be consistent with adjacent terrain. Allow gradual transitions.
-Place resources that make sense for the terrain.
+The terrain type is fixed — do not change it.
+Place resources that naturally occur in {terrain_type} terrain.
 Occasionally (roughly 1 in 12 tiles) include "ruins" in features — crumbled structures,
 old foundations, collapsed walls. They hint at prior habitation and can be looted.
 
 Respond in this exact JSON format:
 {{
-  "terrain": "<grass|light_forest|dense_forest|hills|mountain|water|beach|cave|road>",
-  "elevation": <0-10>,
+  "terrain": "{terrain_type}",
+  "elevation": {elev_hint},
   "features": ["<feature1>", "<feature2>"],
   "resources": [
     {{"type": "<resource>", "qty": <int>, "max_qty": <int>}}
@@ -136,8 +199,8 @@ Respond in this exact JSON format:
             data = self._extract_json(raw)
             # Validate and normalise
             return {
-                "terrain": data.get("terrain", "grass"),
-                "elevation": int(data.get("elevation", 2)),
+                "terrain": terrain_type,  # always use noise-determined terrain
+                "elevation": int(data.get("elevation", elev_hint)),
                 "features": data.get("features", []),
                 "resources": [
                     {
@@ -178,6 +241,9 @@ Design a starter crate tailored to this specific person — not generic survival
 but something that feels like it was packed for them. Include 4-6 items.
 Available item types: tinder, rope, knife, axe, raw_food, cooked_food, long_stick,
 sharp_rock, vine, torch, fishing_rod, paper, charcoal, note, flute.
+Note: a "note" item is a blank piece of paper — if you include one, the crate narrative
+should mention it is blank and the agent can write on it using the write action.
+Consider including paper+charcoal if the agent might want to write or leave messages.
 
 Respond in this exact JSON format:
 {{
@@ -312,6 +378,63 @@ Respond in this exact JSON format:
                 "narrative": "Old stone and splinters — not much, but enough.",
             }
 
+    async def get_resource_brief(
+        self,
+        agent_name: str,
+        agent_goal: str,
+        agent_inventory: dict,
+        item_catalog: dict,
+        model: str,
+    ) -> str:
+        """
+        Produce a short resource checklist for an agent's goal.
+        Returns 2-5 lines of plain text, e.g.:
+          wood ✓ (91 in hand) | rope ✗ → craft from 3x vine | vine ✗ → gather in forest
+        """
+        catalog_lines = []
+        for name, data in item_catalog.items():
+            if data.get("requires"):
+                req_str = " + ".join(f"{v}x {k}" for k, v in data["requires"].items())
+                catalog_lines.append(f"  {name}: craft from {req_str}")
+            elif data.get("found_in"):
+                catalog_lines.append(f"  {name}: gather in {', '.join(data['found_in'])}")
+
+        inv_str = (
+            ", ".join(f"{v}x {k}" for k, v in agent_inventory.items())
+            if agent_inventory else "empty"
+        )
+
+        prompt = f"""\
+{agent_name} has set a new goal: "{agent_goal}"
+Current inventory: {inv_str}
+
+Item acquisition reference:
+{chr(10).join(catalog_lines[:30])}
+
+List 2-4 key resources this goal will need. For each, state:
+- ✓ if already in inventory (with qty)
+- ✗ and how to obtain if missing (craft recipe or terrain to gather in)
+
+Reply in 2-5 lines of plain text, no JSON, no bullet points. Example style:
+  wood ✓ (91) | rope ✗ → craft from 3x vine | vine ✗ → gather in light_forest or dense_forest
+"""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a concise survival game assistant. "
+                    "List the key resources an agent needs for their goal and how to get them. "
+                    "2-5 lines of plain text only."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            return await self._call_llm(messages, model, max_tokens=150, temperature=0.35)
+        except Exception as exc:
+            logger.error("WorldAgent.get_resource_brief failed: %s", exc)
+            return ""
+
     async def narrate_action(
         self,
         agent_name: str,
@@ -388,52 +511,38 @@ Respond with only the updated chronicle text."""
 
 def _procedural_tile(x: int, y: int) -> dict:
     """Generate a tile procedurally when the LLM is unavailable."""
-    # Simple noise-like selection based on position
-    r = ((x * 73856093) ^ (y * 19349663)) % 100
+    terrain = _terrain_from_noise(x, y)
+    raw_elev = 0.65 * _smooth_noise(x * 0.055, y * 0.055, 1337) \
+             + 0.35 * _smooth_noise(x * 0.09,  y * 0.09,  2718)
+    elev = int(raw_elev * 10)
 
-    if r < 30:
-        terrain = "grass"
-        resources = [{"type": "raw_food", "qty": 2, "max_qty": 4, "regen_at_tick": 0}]
-        narrative = "Open grassland, windswept."
-    elif r < 50:
-        terrain = "light_forest"
-        resources = [
-            {"type": "long_stick", "qty": 2, "max_qty": 4, "regen_at_tick": 0},
-            {"type": "vine", "qty": 2, "max_qty": 3, "regen_at_tick": 0},
-        ]
-        narrative = "Scattered trees, light filtering through."
-    elif r < 65:
-        terrain = "dense_forest"
-        resources = [{"type": "vine", "qty": 3, "max_qty": 5, "regen_at_tick": 0}]
-        narrative = "Thick canopy. The light barely reaches the floor."
-    elif r < 75:
-        terrain = "hills"
-        resources = [{"type": "sharp_rock", "qty": 3, "max_qty": 5, "regen_at_tick": 0}]
-        narrative = "Rolling hills, exposed rock at the crests."
-    elif r < 82:
-        terrain = "beach"
-        resources = [{"type": "sharp_rock", "qty": 1, "max_qty": 2, "regen_at_tick": 0}]
-        narrative = "Pale sand and smooth stones."
-    elif r < 88:
-        terrain = "water"
-        resources = [{"type": "raw_food", "qty": 2, "max_qty": 4, "regen_at_tick": 0}]
-        narrative = "Clear water, shallow near the edges."
-    elif r < 93:
-        terrain = "mountain"
-        resources = [{"type": "sharp_rock", "qty": 4, "max_qty": 6, "regen_at_tick": 0}]
-        narrative = "Sheer rock face."
-    else:
-        terrain = "cave"
-        resources = [{"type": "sharp_rock", "qty": 2, "max_qty": 3, "regen_at_tick": 0}]
-        narrative = "A low cave mouth. Cool air drifts out."
-
-    elev_r = ((x * 1234567) ^ (y * 7654321)) % 11
+    resource_map = {
+        "grass":        [{"type": "raw_food",   "qty": 2, "max_qty": 4, "regen_at_tick": 0}],
+        "light_forest": [{"type": "long_stick", "qty": 2, "max_qty": 4, "regen_at_tick": 0},
+                         {"type": "vine",       "qty": 2, "max_qty": 3, "regen_at_tick": 0}],
+        "dense_forest": [{"type": "vine",       "qty": 3, "max_qty": 5, "regen_at_tick": 0}],
+        "hills":        [{"type": "sharp_rock", "qty": 3, "max_qty": 5, "regen_at_tick": 0}],
+        "beach":        [{"type": "sharp_rock", "qty": 1, "max_qty": 2, "regen_at_tick": 0}],
+        "water":        [{"type": "raw_food",   "qty": 2, "max_qty": 4, "regen_at_tick": 0}],
+        "mountain":     [{"type": "sharp_rock", "qty": 4, "max_qty": 6, "regen_at_tick": 0}],
+        "cave":         [{"type": "sharp_rock", "qty": 2, "max_qty": 3, "regen_at_tick": 0}],
+    }
+    narrative_map = {
+        "grass":        "Open grassland, windswept.",
+        "light_forest": "Scattered trees, light filtering through.",
+        "dense_forest": "Thick canopy. The light barely reaches the floor.",
+        "hills":        "Rolling hills, exposed rock at the crests.",
+        "beach":        "Pale sand and smooth stones.",
+        "water":        "Clear water, shallow near the edges.",
+        "mountain":     "Sheer rock face.",
+        "cave":         "A low cave mouth. Cool air drifts out.",
+    }
     return {
-        "terrain": terrain,
-        "elevation": elev_r,
-        "features": [],
-        "resources": resources,
-        "narrative": narrative,
+        "terrain":   terrain,
+        "elevation": elev,
+        "features":  [],
+        "resources": resource_map.get(terrain, []),
+        "narrative": narrative_map.get(terrain, "Unremarkable ground."),
     }
 
 

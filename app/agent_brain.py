@@ -49,7 +49,18 @@ def _needs_summary(needs: dict) -> str:
 def _format_inventory(inventory: dict) -> str:
     if not inventory:
         return _INVENTORY_EMPTY
-    return ", ".join(f"{qty}x {item}" for item, qty in inventory.items())
+    from app.crafting import RECIPES
+    parts = []
+    for item, qty in inventory.items():
+        recipe = RECIPES.get(item, {})
+        if item == "note":
+            desc = "blank writing medium — use 'write' action to inscribe content and leave on tile"
+        else:
+            desc = recipe.get("description", "")
+        tag = f" — {desc}" if desc else ""
+        label = item.replace("_", " ")
+        parts.append(f"{qty}x {label}{tag}")
+    return "\n  ".join(parts)
 
 
 def _format_visible_tiles(visible_tiles: list[dict]) -> str:
@@ -191,6 +202,10 @@ CURRENT GOAL: {agent.current_goal or "None — decide what matters to you"}{
   if agent.current_goal
      and (world_state.tick - agent.goal_set_tick) > 20
      and all(v < 50 for v in agent.needs.values())
+  else ""
+}{
+  f"\nGOAL RESOURCES:\n  {agent.goal_resource_brief.strip()}"
+  if agent.current_goal and getattr(agent, 'goal_resource_brief', None)
   else ""
 }
 

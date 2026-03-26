@@ -165,6 +165,7 @@ class VillageAgent(Base):
     joined_tick: Mapped[int] = mapped_column(Integer, default=0)
     last_tick: Mapped[int] = mapped_column(Integer, default=0)
     goal_set_tick: Mapped[int] = mapped_column(Integer, default=0)
+    goal_resource_brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     _starter_crate_opened: Mapped[str] = mapped_column(Text, default="false")
 
     # --- JSON property helpers ---
