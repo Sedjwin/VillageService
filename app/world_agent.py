@@ -175,8 +175,16 @@ Terrain type: {terrain_type} (elevation hint: {elev_hint}/10)
 
 The terrain type is fixed — do not change it.
 Place resources that naturally occur in {terrain_type} terrain.
-Occasionally (roughly 1 in 12 tiles) include "ruins" in features — crumbled structures,
-old foundations, collapsed walls. They hint at prior habitation and can be looted.
+
+Features must reflect real-world rarity. Ask yourself: how often would this actually appear?
+- Common (many tiles): fallen log, dense undergrowth, rocky outcrop, stream, muddy path, berry bushes, wildflowers
+- Uncommon (1 in 10): clearing, ancient tree, stone wall remnant, animal tracks, cold spring
+- Rare (1 in 30): ruins — crumbled structures, old foundations, collapsed walls hinting at prior habitation
+- Very rare (1 in 100+): an abandoned campfire (long cold, someone passed through long ago), a weathered post or board
+
+Never place fresh or active human constructions as world features. Campfires, noticeboards, shelters, and similar
+structures are built by agents — the world does not spawn them. Only abandoned remnants of past human presence
+are possible, and only as very rare discoveries.
 
 Respond in this exact JSON format:
 {{

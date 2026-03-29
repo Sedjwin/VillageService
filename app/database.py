@@ -33,6 +33,7 @@ async def init_db():
         migrations = [
             "ALTER TABLE world_state ADD COLUMN game_hour_accum REAL DEFAULT 0.0",
             "ALTER TABLE village_agents ADD COLUMN goal_resource_brief TEXT",
+            "ALTER TABLE creatures ADD COLUMN patience_tick INTEGER DEFAULT 0",
         ]
         for sql in migrations:
             try:

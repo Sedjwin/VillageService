@@ -73,6 +73,10 @@
     .ev-row  { font-size: 10px; color: #6b7280; padding: 3px 2px; border-bottom: 1px solid rgba(31,41,55,.5); line-height: 1.4; }
     .ev-time { color: #374151; }
     .ev-speak  { color: #4ade80; }
+    .conv-block { border-left: 2px solid #1f2937; margin: 6px 0; padding: 2px 0 2px 6px; }
+    .conv-hdr { font-size: 10px; color: #6b7280; margin-bottom: 3px; }
+    .conv-line { font-size: 11px; margin: 2px 0; } .conv-name { font-weight: 600; color: #93c5fd; }
+    .conv-text { color: #d1d5db; }
     .ev-craft  { color: #fbbf24; }
     .ev-build  { color: #f97316; }
     .ev-gather { color: #34d399; }
@@ -90,6 +94,11 @@
     .live-btn { display: flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; border: none; cursor: pointer; }
     .live-btn.live  { background: rgba(5,46,22,.4); color: #4ade80; border: 1px solid rgba(5,46,22,.8); cursor: default; }
     .live-btn.hist  { background: rgba(120,53,15,.4); color: #f59e0b; border: 1px solid rgba(120,53,15,.8); }
+    #btn-play { color: #f59e0b !important; }
+    #btn-play.playing { color: #4ade80 !important; }
+    .spd-btn { background: none; border: 1px solid #1f2937; cursor: pointer; color: #4b5563; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+    .spd-btn:hover { background: #1f2937; color: #d1d5db; }
+    .spd-btn.active { background: #1f2937; color: #f59e0b; border-color: #f59e0b55; }
     .live-btn.hist:hover { background: rgba(120,53,15,.6); }
 
     /* Scrollbars */
@@ -168,6 +177,11 @@
     .insp-bld-row { font-size:11px; color:#60a5fa; padding:2px 0; }
     .insp-item-row { font-size:11px; color:#d1d5db; padding:2px 0; border-bottom:1px solid rgba(31,41,55,.3); }
     .insp-note-content { font-size:10px; color:#6b7280; font-style:italic; padding:2px 6px 4px; line-height:1.4; }
+    .insp-switcher { display:flex; flex-wrap:wrap; gap:4px; margin:8px 0 6px; }
+    .insp-chip { background:#1f2937; border:1px solid #374151; color:#9ca3af; border-radius:999px; padding:3px 7px; font-size:10px; cursor:pointer; }
+    .insp-chip:hover { color:#e5e7eb; border-color:#4b5563; }
+    .insp-chip.active { background:rgba(245,158,11,.12); border-color:#f59e0b; color:#fbbf24; }
+    .insp-detail { margin-top:6px; padding-top:6px; border-top:1px solid rgba(31,41,55,.6); }
   </style>
 </head>
 <body>
@@ -265,43 +279,43 @@
   <!-- SIMULATION TUNING -->
   <div class="adm-sec">
     <h3>Simulation Tuning</h3>
-    <div class="adm-lbl" style="margin-bottom:6px">Needs decay rate (×base)</div>
+    <div class="adm-lbl" style="margin-bottom:6px">Needs pressure per tick (0=satisfied → 100=critical)</div>
     <div class="adm-srow">
       <label>Hunger</label>
-      <input type="range" id="sc-hunger-decay" min="0" max="5" step="0.1" value="1.0"
-             oninput="document.getElementById('sc-hunger-decay-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
-      <span id="sc-hunger-decay-v">1.0×</span>
+      <input type="range" id="sc-hunger-rate" min="0" max="1" step="0.01" value="0.15"
+             oninput="document.getElementById('sc-hunger-rate-v').textContent=parseFloat(this.value).toFixed(2)+'/tick'" />
+      <span id="sc-hunger-rate-v">0.15/tick</span>
     </div>
     <div class="adm-srow">
-      <label>Rest</label>
-      <input type="range" id="sc-rest-decay" min="0" max="5" step="0.1" value="1.0"
-             oninput="document.getElementById('sc-rest-decay-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
-      <span id="sc-rest-decay-v">1.0×</span>
+      <label>Fatigue</label>
+      <input type="range" id="sc-rest-rate" min="0" max="1" step="0.01" value="0.10"
+             oninput="document.getElementById('sc-rest-rate-v').textContent=parseFloat(this.value).toFixed(2)+'/tick'" />
+      <span id="sc-rest-rate-v">0.10/tick</span>
     </div>
     <div class="adm-srow">
-      <label>Warmth</label>
-      <input type="range" id="sc-warmth-decay" min="0" max="5" step="0.1" value="1.0"
-             oninput="document.getElementById('sc-warmth-decay-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
-      <span id="sc-warmth-decay-v">1.0×</span>
+      <label>Cold</label>
+      <input type="range" id="sc-warmth-rate" min="0" max="1" step="0.01" value="0.09"
+             oninput="document.getElementById('sc-warmth-rate-v').textContent=parseFloat(this.value).toFixed(2)+'/tick'" />
+      <span id="sc-warmth-rate-v">0.09/tick</span>
     </div>
     <div class="adm-srow">
-      <label>Social</label>
-      <input type="range" id="sc-social-decay" min="0" max="5" step="0.1" value="1.0"
-             oninput="document.getElementById('sc-social-decay-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
-      <span id="sc-social-decay-v">1.0×</span>
+      <label>Lonely</label>
+      <input type="range" id="sc-social-rate" min="0" max="1" step="0.01" value="0.06"
+             oninput="document.getElementById('sc-social-rate-v').textContent=parseFloat(this.value).toFixed(2)+'/tick'" />
+      <span id="sc-social-rate-v">0.06/tick</span>
     </div>
-    <div class="adm-lbl" style="margin:8px 0 6px">Food satisfaction (×base)</div>
+    <div class="adm-lbl" style="margin:8px 0 6px">Food satisfaction (hunger points restored)</div>
     <div class="adm-srow">
       <label>Cooked</label>
-      <input type="range" id="sc-cooked-restore" min="0.1" max="5" step="0.1" value="1.0"
-             oninput="document.getElementById('sc-cooked-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
-      <span id="sc-cooked-v">1.0×</span>
+      <input type="range" id="sc-cooked-restore" min="1" max="100" step="1" value="45"
+             oninput="document.getElementById('sc-cooked-v').textContent=this.value+' pts'" />
+      <span id="sc-cooked-v">45 pts</span>
     </div>
     <div class="adm-srow">
       <label>Raw</label>
-      <input type="range" id="sc-raw-restore" min="0.1" max="5" step="0.1" value="1.0"
-             oninput="document.getElementById('sc-raw-v').textContent=parseFloat(this.value).toFixed(1)+'×'" />
-      <span id="sc-raw-v">1.0×</span>
+      <input type="range" id="sc-raw-restore" min="1" max="100" step="1" value="25"
+             oninput="document.getElementById('sc-raw-v').textContent=this.value+' pts'" />
+      <span id="sc-raw-v">25 pts</span>
     </div>
     <div class="adm-lbl" style="margin:8px 0 6px">World events frequency (×base 8%)</div>
     <div class="adm-srow">
@@ -413,6 +427,8 @@
 
       <div class="section-hdr">Event Log</div>
       <div id="event-log"></div>
+      <div class="section-hdr" style="margin-top:8px">Conversations</div>
+      <div id="conv-log" style="overflow-y:auto;padding:4px 6px;flex:1"></div>
     </aside>
   </div>
 
@@ -422,9 +438,17 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
 
+    <button id="btn-play" disabled title="Play from here">
+      <svg id="play-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+    </button>
+    <button class="spd-btn" id="spd-half" title="Half speed">½×</button>
+    <button class="spd-btn active" id="spd-1" title="Normal speed">1×</button>
+    <button class="spd-btn" id="spd-2" title="Double speed">2×</button>
+
     <div id="scrubber-wrap">
       <span id="scrubber-min" class="scrubber-label" style="display:none"></span>
       <input type="range" id="scrubber" style="display:none" />
+      <span id="scrubber-cur" style="display:none;font-size:10px;color:#f59e0b;white-space:nowrap;margin:0 4px"></span>
       <span id="scrubber-max" class="scrubber-label" style="display:none"></span>
       <span id="scrubber-empty" style="font-size:10px;color:#374151;flex:1;text-align:center">No history yet — snapshots begin next tick</span>
     </div>
@@ -461,6 +485,7 @@ let historySnap  = null
 
 let selectedAgent = null
 let selectedTile  = null
+let selectedTileFocus = null
 
 let camera = { x: 0, y: 0, zoom: 1.5 }
 let drag = null, touch = null
@@ -920,6 +945,46 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtxMenu(
 
 function dist2(touches) { return Math.hypot(touches[0].clientX-touches[1].clientX, touches[0].clientY-touches[1].clientY) }
 
+function currentAgents() {
+  return (historyMode && historySnap ? historySnap.agents : liveAgents) || []
+}
+
+function currentCreatures() {
+  return (historyMode && historySnap ? historySnap.creatures : liveCreatures) || []
+}
+
+function currentTileAt(tx, ty) {
+  if (historyMode && historySnap?.tiles) return historySnap.tiles.find(t => t.x === tx && t.y === ty) || null
+  return liveTiles[`${tx},${ty}`] || null
+}
+
+function getTileContents(tx, ty) {
+  const tile = currentTileAt(tx, ty)
+  return {
+    tile,
+    agents: currentAgents().filter(a => a.x === tx && a.y === ty),
+    creatures: currentCreatures().filter(c => c.x === tx && c.y === ty),
+    features: (tile?.features || []).filter(Boolean),
+    buildings: tile?.buildings || [],
+    items: tile?.items || [],
+    resources: (tile?.resource_nodes || []).filter(r => r.qty > 0),
+  }
+}
+
+function selectTileAt(tx, ty, focus = null) {
+  selectedAgent = null
+  selectedTile = { x: tx, y: ty }
+  selectedTileFocus = focus || { kind: 'tile', index: null }
+  renderInspector()
+  updateAgentList()
+}
+
+function focusTileEntry(kind, index = null) {
+  if (!selectedTile) return
+  selectedTileFocus = { kind, index }
+  renderInspector()
+}
+
 // ── Context menu ──────────────────────────────────────────────────────────────
 function hideCtxMenu() {
   document.getElementById('ctx-menu').style.display = 'none'
@@ -1014,12 +1079,6 @@ function showCtxMenu(cx, cy, tx, ty) {
   menu.style.top  = top + 'px'
 }
 
-function selectTileAt(tx, ty) {
-  selectedAgent = null
-  selectedTile = liveTiles[`${tx},${ty}`] || null
-  renderInspector()
-}
-
 function showNoteContent(encoded) {
   const content = decodeURIComponent(encoded)
   alert('Note contents:\n\n' + content)
@@ -1088,14 +1147,7 @@ function handleClick(cx, cy) {
   const TS = 32 * camera.zoom
   const tx = Math.floor((mx + camera.x) / TS)
   const ty = Math.floor((my + camera.y) / TS)
-  const agents = historyMode && historySnap ? historySnap.agents : liveAgents
-  const clicked = agents.find(a => a.x===tx && a.y===ty)
-  if (clicked) { selectedAgent=clicked; selectedTile=null }
-  else {
-    selectedAgent=null
-    selectedTile = liveTiles[`${tx},${ty}`] || null
-  }
-  renderInspector()
+  selectTileAt(tx, ty)
 }
 
 document.getElementById('zoom-in').onclick  = () => { camera.zoom=Math.min(4,camera.zoom*1.2); document.getElementById('zoom-pct').textContent=Math.round(camera.zoom*100)+'%' }
@@ -1134,9 +1186,10 @@ function updateAgentList() {
 }
 
 function selectAgent(id) {
-  const agents = historyMode && historySnap ? historySnap.agents : liveAgents
+  const agents = currentAgents()
   selectedAgent = agents.find(a => a.agent_id === id) || null
   selectedTile = null
+  selectedTileFocus = null
   centerOn(selectedAgent)
   renderInspector()
   updateAgentList()
@@ -1149,78 +1202,131 @@ function centerOn(agent) {
   camera.y = agent.y * TS - canvas.height/2
 }
 
+function renderAgentInspector(a, showTrackButton = false) {
+  const col = a.avatar_config?.primary_color || '#4a9eff'
+  const needs = a.needs || {}
+  const makeBar = (label, val, color) =>
+    `<div class="bar-wrap"><span class="bl">${label}</span><div class="bar-track"><div class="bar-fill" style="width:${val}%;background:${color}"></div></div></div>`
+  const inv = a.inventory && Object.keys(a.inventory).length > 0
+    ? `<div class="inv-tags">${Object.entries(a.inventory).map(([k,v])=>`<span class="inv-tag">${v}× ${k.replace(/_/g,' ')}</span>`).join('')}</div>`
+    : ''
+  const skillEntries = a.skills ? Object.entries(a.skills).sort((x,y)=>y[1]-x[1]).slice(0,5) : []
+  const skillsHtml = skillEntries.length > 0
+    ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Skills</div>${skillEntries.map(([k,v])=>makeBar(k.replace(/_/g,' '), Math.min(100,v), '#8b5cf6')).join('')}</div>`
+    : ''
+  const mem = (a.village_memory||[]).slice(0,5)
+  const memHtml = mem.length > 0
+    ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Memory</div>${mem.map(m=>`<div style="font-size:10px;color:#6b7280;padding:2px 0;border-bottom:1px solid rgba(31,41,55,.3);line-height:1.4">${m}</div>`).join('')}</div>`
+    : ''
+  return `
+    <div class="insp-title" style="color:${col}">● ${a.name}</div>
+    <div class="insp-row"><span class="insp-label">Pos</span><span class="insp-val">${a.x}, ${a.y}</span></div>
+    <div class="insp-row"><span class="insp-label">State</span><span class="insp-val">${a.state}</span></div>
+    <div class="insp-row"><span class="insp-label">Mood</span><span class="insp-val">${((a.mood||0)*100).toFixed(0)}%</span></div>
+    ${makeBar('Hunger', needs.hunger??0, '#f59e0b')}
+    ${makeBar('Rest', needs.rest??0, '#60a5fa')}
+    ${makeBar('Warmth', needs.warmth??0, '#f87171')}
+    ${makeBar('Social', needs.social??0, '#4ade80')}
+    ${a.current_goal ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Goal</div><div class="insp-goal">${a.current_goal}</div></div>` : ''}
+    ${inv ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Inventory</div>${inv}</div>` : ''}
+    ${skillsHtml}
+    ${memHtml}
+    ${showTrackButton ? `<button class="insp-chip active" style="margin-top:8px" onclick="selectAgent('${a.agent_id}')">Track agent</button>` : ''}
+  `
+}
+
 function renderInspector() {
   const el = document.getElementById('inspector')
   if (selectedAgent) {
-    const a = selectedAgent
-    const col = a.avatar_config?.primary_color || '#4a9eff'
-    const needs = a.needs || {}
-    const makeBar = (label, val, color) =>
-      `<div class="bar-wrap"><span class="bl">${label}</span><div class="bar-track"><div class="bar-fill" style="width:${val}%;background:${color}"></div></div></div>`
-    const inv = a.inventory && Object.keys(a.inventory).length > 0
-      ? `<div class="inv-tags">${Object.entries(a.inventory).map(([k,v])=>`<span class="inv-tag">${v}× ${k.replace(/_/g,' ')}</span>`).join('')}</div>`
-      : ''
-    const skillEntries = a.skills ? Object.entries(a.skills).sort((x,y)=>y[1]-x[1]).slice(0,5) : []
-    const skillsHtml = skillEntries.length > 0
-      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Skills</div>${skillEntries.map(([k,v])=>makeBar(k.replace(/_/g,' '), Math.min(100,v), '#8b5cf6')).join('')}</div>`
-      : ''
-    const mem = (a.village_memory||[]).slice(0,5)
-    const memHtml = mem.length > 0
-      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Memory</div>${mem.map(m=>`<div style="font-size:10px;color:#6b7280;padding:2px 0;border-bottom:1px solid rgba(31,41,55,.3);line-height:1.4">${m}</div>`).join('')}</div>`
-      : ''
-    el.innerHTML = `
-      <div class="insp-title" style="color:${col}">● ${a.name}</div>
-      <div class="insp-row"><span class="insp-label">Pos</span><span class="insp-val">${a.x}, ${a.y}</span></div>
-      <div class="insp-row"><span class="insp-label">State</span><span class="insp-val">${a.state}</span></div>
-      <div class="insp-row"><span class="insp-label">Mood</span><span class="insp-val">${((a.mood||0)*100).toFixed(0)}%</span></div>
-      ${makeBar('Hunger', needs.hunger??0, '#f59e0b')}
-      ${makeBar('Rest', needs.rest??0, '#60a5fa')}
-      ${makeBar('Warmth', needs.warmth??0, '#f87171')}
-      ${makeBar('Social', needs.social??0, '#4ade80')}
-      ${a.current_goal ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Goal</div><div class="insp-goal">${a.current_goal}</div></div>` : ''}
-      ${inv ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Inventory</div>${inv}</div>` : ''}
-      ${skillsHtml}
-      ${memHtml}
-    `
-  } else if (selectedTile) {
-    const t = selectedTile
-    const tc = { grass:'#4ade80', light_forest:'#22c55e', dense_forest:'#16a34a', hills:'#ca8a04', mountain:'#9ca3af', water:'#60a5fa', beach:'#fde047', cave:'#6b7280', road:'#d97706' }[t.terrain] || '#9ca3af'
-    const res = (t.resource_nodes||[]).filter(r=>r.qty>0)
-    const feats = (t.features||[]).filter(f=>f)
-    const buildings = (t.buildings||[])
-    const items = (t.items||[])
-
-    const featHtml = feats.length > 0
-      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Features</div><div>${feats.map(f=>`<span class="insp-feat-tag">${f.replace(/_/g,' ')}</span>`).join('')}</div></div>`
-      : ''
-
-    const resHtml = res.length > 0
-      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Resources</div>${res.map(r=>`<div class="insp-row"><span class="insp-val" style="text-transform:capitalize">${r.type.replace(/_/g,' ')}</span><span style="color:#4b5563;font-size:10px;margin-left:auto">${r.qty}/${r.max_qty}</span></div>`).join('')}</div>`
-      : ''
-
-    const bldHtml = buildings.length > 0
-      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Buildings</div>${buildings.map(b=>`<div class="insp-bld-row">🏗 ${(b.type||'?').replace(/_/g,' ')}${b.built_by ? ' <span style="color:#4b5563;font-size:10px">by '+b.built_by+'</span>' : ''}</div>`).join('')}</div>`
-      : ''
-
-    const itemHtml = items.length > 0
-      ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Items on ground</div>${items.map(it => {
-          const label = (it.type||'?').replace(/_/g,' ')
-          const author = it.author ? ` <span style="color:#4b5563;font-size:10px">(${it.author})</span>` : ''
-          const noteContent = it.content ? `<div class="insp-note-content">"${it.content}"</div>` : ''
-          return `<div class="insp-item-row">${label} ×${it.qty||1}${author}${noteContent}</div>`
-        }).join('')}</div>`
-      : ''
-
-    el.innerHTML = `
-      <div class="insp-title">(${t.x}, ${t.y})</div>
-      <div class="insp-row"><span class="insp-label">Terrain</span><span class="insp-val" style="color:${tc};text-transform:capitalize">${t.terrain.replace(/_/g,' ')}</span></div>
-      <div class="insp-row"><span class="insp-label">Elevation</span><span class="insp-val">${t.elevation}</span></div>
-      ${t.narrative ? `<div class="insp-goal" style="margin-top:5px;font-style:italic;color:#6b7280">${t.narrative}</div>` : ''}
-      ${featHtml}${resHtml}${bldHtml}${itemHtml}
-    `
-  } else {
-    el.innerHTML = '<div class="placeholder">Click a tile or agent to inspect</div>'
+    el.innerHTML = renderAgentInspector(selectedAgent)
+    return
   }
+
+  if (selectedTile) {
+    const { x, y } = selectedTile
+    const contents = getTileContents(x, y)
+    const t = contents.tile || { x, y, terrain: 'unexplored', elevation: '—', narrative: '', features: [], buildings: [], items: [], resource_nodes: [] }
+    const tc = { grass:'#4ade80', light_forest:'#22c55e', dense_forest:'#16a34a', hills:'#ca8a04', mountain:'#9ca3af', water:'#60a5fa', beach:'#fde047', cave:'#6b7280', road:'#d97706', unexplored:'#6b7280' }[t.terrain] || '#9ca3af'
+    const focus = selectedTileFocus || { kind: 'tile', index: null }
+    const focusExists = (focus.kind === 'tile')
+      || (focus.kind === 'agent' && contents.agents[focus.index])
+      || (focus.kind === 'creature' && contents.creatures[focus.index])
+      || (focus.kind === 'feature' && contents.features[focus.index])
+      || (focus.kind === 'building' && contents.buildings[focus.index])
+      || (focus.kind === 'item' && contents.items[focus.index])
+    if (!focusExists) selectedTileFocus = { kind: 'tile', index: null }
+    const active = selectedTileFocus || { kind: 'tile', index: null }
+
+    const chips = [
+      `<button class="insp-chip ${active.kind === 'tile' ? 'active' : ''}" onclick="focusTileEntry('tile')">Tile</button>`,
+      ...contents.agents.map((a, i) => `<button class="insp-chip ${active.kind === 'agent' && active.index === i ? 'active' : ''}" onclick="focusTileEntry('agent', ${i})">Agent: ${a.name}</button>`),
+      ...contents.creatures.map((c, i) => `<button class="insp-chip ${active.kind === 'creature' && active.index === i ? 'active' : ''}" onclick="focusTileEntry('creature', ${i})">Creature: ${(c.creature_type||'creature').replace(/_/g,' ')}</button>`),
+      ...contents.features.map((f, i) => `<button class="insp-chip ${active.kind === 'feature' && active.index === i ? 'active' : ''}" onclick="focusTileEntry('feature', ${i})">Feature: ${f.replace(/_/g,' ')}</button>`),
+      ...contents.buildings.map((b, i) => `<button class="insp-chip ${active.kind === 'building' && active.index === i ? 'active' : ''}" onclick="focusTileEntry('building', ${i})">Building: ${(b.type||'building').replace(/_/g,' ')}</button>`),
+      ...contents.items.map((it, i) => `<button class="insp-chip ${active.kind === 'item' && active.index === i ? 'active' : ''}" onclick="focusTileEntry('item', ${i})">Item: ${(it.type||'item').replace(/_/g,' ')}</button>`),
+    ].join('')
+
+    const tileSummary = `
+      <div class="insp-title">(${x}, ${y})</div>
+      <div class="insp-row"><span class="insp-label">Terrain</span><span class="insp-val" style="color:${tc};text-transform:capitalize">${String(t.terrain).replace(/_/g,' ')}</span></div>
+      <div class="insp-row"><span class="insp-label">Elevation</span><span class="insp-val">${t.elevation}</span></div>
+      <div class="insp-row"><span class="insp-label">Agents</span><span class="insp-val">${contents.agents.length}</span></div>
+      <div class="insp-row"><span class="insp-label">Creatures</span><span class="insp-val">${contents.creatures.length}</span></div>
+      <div class="insp-row"><span class="insp-label">Features</span><span class="insp-val">${contents.features.length}</span></div>
+      <div class="insp-row"><span class="insp-label">Buildings</span><span class="insp-val">${contents.buildings.length}</span></div>
+      <div class="insp-row"><span class="insp-label">Ground items</span><span class="insp-val">${contents.items.length}</span></div>
+      ${t.narrative ? `<div class="insp-goal" style="margin-top:5px;font-style:italic;color:#6b7280">${t.narrative}</div>` : ''}
+      ${contents.resources.length ? `<div style="margin-top:5px"><div class="insp-label" style="margin-bottom:3px">Resources</div>${contents.resources.map(r=>`<div class="insp-row"><span class="insp-val" style="text-transform:capitalize">${r.type.replace(/_/g,' ')}</span><span style="color:#4b5563;font-size:10px;margin-left:auto">${r.qty}/${r.max_qty}</span></div>`).join('')}</div>` : ''}
+    `
+
+    let detailHtml = tileSummary
+    if (active.kind === 'agent' && contents.agents[active.index]) {
+      detailHtml = renderAgentInspector(contents.agents[active.index], true)
+    } else if (active.kind === 'creature' && contents.creatures[active.index]) {
+      const c = contents.creatures[active.index]
+      detailHtml = `
+        <div class="insp-title">🐾 ${(c.creature_type||'creature').replace(/_/g,' ')}</div>
+        <div class="insp-row"><span class="insp-label">Pos</span><span class="insp-val">${c.x}, ${c.y}</span></div>
+        <div class="insp-row"><span class="insp-label">State</span><span class="insp-val">${c.state || 'unknown'}</span></div>
+        ${c.target_x != null && c.target_y != null ? `<div class="insp-row"><span class="insp-label">Target</span><span class="insp-val">${c.target_x}, ${c.target_y}</span></div>` : ''}
+        ${c.hp != null ? `<div class="insp-row"><span class="insp-label">HP</span><span class="insp-val">${c.hp}</span></div>` : ''}
+      `
+    } else if (active.kind === 'feature' && contents.features[active.index]) {
+      const f = contents.features[active.index]
+      detailHtml = `
+        <div class="insp-title">✨ ${f.replace(/_/g,' ')}</div>
+        <div class="insp-row"><span class="insp-label">Tile</span><span class="insp-val">${x}, ${y}</span></div>
+        <div class="insp-row"><span class="insp-label">Type</span><span class="insp-val">Feature</span></div>
+      `
+    } else if (active.kind === 'building' && contents.buildings[active.index]) {
+      const b = contents.buildings[active.index]
+      detailHtml = `
+        <div class="insp-title">🏗 ${(b.type||'building').replace(/_/g,' ')}</div>
+        <div class="insp-row"><span class="insp-label">Tile</span><span class="insp-val">${x}, ${y}</span></div>
+        ${b.built_by ? `<div class="insp-row"><span class="insp-label">Built by</span><span class="insp-val">${b.built_by}</span></div>` : ''}
+        ${b.progress != null ? `<div class="insp-row"><span class="insp-label">Progress</span><span class="insp-val">${b.progress}</span></div>` : ''}
+      `
+    } else if (active.kind === 'item' && contents.items[active.index]) {
+      const it = contents.items[active.index]
+      detailHtml = `
+        <div class="insp-title">📦 ${(it.type||'item').replace(/_/g,' ')}</div>
+        <div class="insp-row"><span class="insp-label">Tile</span><span class="insp-val">${x}, ${y}</span></div>
+        <div class="insp-row"><span class="insp-label">Qty</span><span class="insp-val">${it.qty || 1}</span></div>
+        ${it.author ? `<div class="insp-row"><span class="insp-label">Author</span><span class="insp-val">${it.author}</span></div>` : ''}
+        ${it.content ? `<div class="insp-goal" style="margin-top:5px;font-style:italic;color:#6b7280">${it.content}</div>` : ''}
+      `
+    }
+
+    el.innerHTML = `
+      <div class="insp-title">Tile Inspector</div>
+      <div class="insp-row"><span class="insp-label">Selection</span><span class="insp-val">${x}, ${y}</span></div>
+      <div class="insp-switcher">${chips}</div>
+      <div class="insp-detail">${detailHtml}</div>
+    `
+    return
+  }
+
+  el.innerHTML = '<div class="placeholder">Click a tile or agent to inspect</div>'
 }
 
 function updateEventLog() {
@@ -1233,6 +1339,18 @@ function updateEventLog() {
   }).join('')
 }
 
+function renderConversations(convos) {
+  const el = document.getElementById('conv-log')
+  if (!convos || !convos.length) { el.innerHTML = '<div style="font-size:10px;color:#374151;padding:2px">No conversations yet</div>'; return }
+  el.innerHTML = convos.map(c => {
+    const msgs = (c.messages || []).map(m =>
+      `<div class="conv-line"><span class="conv-name">${m.name}:</span> <span class="conv-text">"${m.text}"</span></div>`
+    ).join('')
+    const parts = (c.participants || []).join(' & ')
+    return `<div class="conv-block"><div class="conv-hdr">D${c.game_day} ${String(c.game_hour??0).padStart(2,'0')}:00 — ${parts}</div>${msgs}</div>`
+  }).join('')
+}
+
 // ── Timeline ─────────────────────────────────────────────────────────────────
 const scrubber = document.getElementById('scrubber')
 const btnPrev  = document.getElementById('btn-prev')
@@ -1242,8 +1360,9 @@ const btnLive  = document.getElementById('btn-live')
 function updateTimelineUI() {
   const hasHistory = historyRange.min != null && historyRange.max != null
   const empty = document.getElementById('scrubber-empty')
-  const smin = document.getElementById('scrubber-min')
-  const smax = document.getElementById('scrubber-max')
+  const smin  = document.getElementById('scrubber-min')
+  const scur  = document.getElementById('scrubber-cur')
+  const smax  = document.getElementById('scrubber-max')
 
   if (hasHistory) {
     empty.style.display = 'none'
@@ -1253,13 +1372,20 @@ function updateTimelineUI() {
     scrubber.min = historyRange.min
     scrubber.max = historyRange.max
     scrubber.value = historyMode ? viewingTick : historyRange.max
+    if (historyMode) {
+      scur.style.display = 'inline'
+      scur.textContent = `tick ${viewingTick} of ${historyRange.max}`
+    } else {
+      scur.style.display = 'none'
+    }
   } else {
     empty.style.display = 'block'
     scrubber.style.display = 'none'
-    smin.style.display = 'none'; smax.style.display = 'none'
+    smin.style.display = 'none'; smax.style.display = 'none'; scur.style.display = 'none'
   }
   btnPrev.disabled = !hasHistory || (historyMode && viewingTick <= historyRange.min)
   btnNext.disabled = !hasHistory || (historyMode && viewingTick >= historyRange.max)
+  btnPlay.disabled = !hasHistory || !historyMode || viewingTick >= historyRange.max
   btnLive.className = historyMode ? 'live-btn hist' : 'live-btn live'
   btnLive.innerHTML = historyMode
     ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg> Go Live'
@@ -1286,17 +1412,70 @@ function goLive() {
   updateTimelineUI(); updateHeader(); updateAgentList(); updateEventLog(); renderInspector()
 }
 
-scrubber.addEventListener('input', e => goToTick(Number(e.target.value)))
+scrubber.addEventListener('input', e => { stopPlayback(); goToTick(Number(e.target.value)) })
 btnPrev.addEventListener('click', () => {
+  stopPlayback()
   const cur = historyMode ? viewingTick : historyRange.max
   if (cur > historyRange.min) goToTick(cur - 1)
 })
 btnNext.addEventListener('click', () => {
+  stopPlayback()
   if (!historyMode) return
   if (viewingTick < historyRange.max) goToTick(viewingTick + 1)
   else goLive()
 })
-btnLive.addEventListener('click', () => { if (historyMode) goLive() })
+btnLive.addEventListener('click', () => { if (historyMode) { stopPlayback(); goLive() } })
+
+// ── Playback ──────────────────────────────────────────────────────────────────
+const btnPlay  = document.getElementById('btn-play')
+const playIcon = document.getElementById('play-icon')
+const PAUSE_ICON = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'
+const PLAY_ICON  = '<polygon points="5,3 19,12 5,21"/>'
+
+let playbackTimer = null
+let playbackSpeed = 1   // ticks per second
+
+function stopPlayback() {
+  if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null }
+  btnPlay.classList.remove('playing')
+  playIcon.innerHTML = PLAY_ICON
+}
+
+function startPlayback() {
+  stopPlayback()
+  // If already live or at max, nothing to play
+  if (!historyMode || viewingTick >= historyRange.max) return
+  btnPlay.classList.add('playing')
+  playIcon.innerHTML = PAUSE_ICON
+  playbackTimer = setInterval(async () => {
+    if (!historyMode) { stopPlayback(); return }
+    const next = viewingTick + 1
+    if (next >= historyRange.max) {
+      await goToTick(historyRange.max)
+      stopPlayback()
+      goLive()
+    } else {
+      await goToTick(next)
+    }
+  }, 1000 / playbackSpeed)
+}
+
+function togglePlayback() {
+  if (playbackTimer) stopPlayback()
+  else startPlayback()
+}
+
+function setPlaybackSpeed(spd) {
+  playbackSpeed = spd
+  document.querySelectorAll('.spd-btn').forEach(b => b.classList.remove('active'))
+  document.getElementById(spd === 0.5 ? 'spd-half' : spd === 2 ? 'spd-2' : 'spd-1').classList.add('active')
+  if (playbackTimer) startPlayback()  // restart at new speed
+}
+
+btnPlay.addEventListener('click', togglePlayback)
+document.getElementById('spd-half').addEventListener('click', () => setPlaybackSpeed(0.5))
+document.getElementById('spd-1').addEventListener('click',    () => setPlaybackSpeed(1))
+document.getElementById('spd-2').addEventListener('click',    () => setPlaybackSpeed(2))
 
 async function fetchHistoryRange() {
   try {
@@ -1354,6 +1533,7 @@ function connectSSE() {
         if (d.agents) liveAgents = d.agents
         if (d.creatures) liveCreatures = d.creatures
         if (d.recent_events) liveEvents = [...d.recent_events, ...liveEvents].slice(0, 80)
+        if (d.recent_conversations) renderConversations(d.recent_conversations)
         {
           const ws2 = d.world_state
           if (ws2?.last_tick_at && ws2?.server_time) {
@@ -1504,15 +1684,15 @@ async function loadSimConfig() {
       const el = document.getElementById(id)
       const dv = document.getElementById(dispId)
       if (el) { el.value = val; }
-      if (dv) dv.textContent = parseFloat(val).toFixed(1) + suffix
+      if (dv) dv.textContent = (suffix === '/tick' ? parseFloat(val).toFixed(2) : suffix === ' pts' ? Math.round(val) : parseFloat(val).toFixed(1)) + suffix
     }
-    set('sc-hunger-decay',  cfg.hunger_decay        ?? 1.0, 'sc-hunger-decay-v', '×')
-    set('sc-rest-decay',    cfg.rest_decay          ?? 1.0, 'sc-rest-decay-v',   '×')
-    set('sc-warmth-decay',  cfg.warmth_decay        ?? 1.0, 'sc-warmth-decay-v', '×')
-    set('sc-social-decay',  cfg.social_decay        ?? 1.0, 'sc-social-decay-v', '×')
-    set('sc-cooked-restore',cfg.cooked_food_restore ?? 1.0, 'sc-cooked-v',       '×')
-    set('sc-raw-restore',   cfg.raw_food_restore    ?? 1.0, 'sc-raw-v',          '×')
-    set('sc-event-chance',  cfg.event_chance        ?? 1.0, 'sc-event-v',        '×')
+    set('sc-hunger-rate',    cfg.hunger_rate         ?? 0.15, 'sc-hunger-rate-v', '/tick')
+    set('sc-rest-rate',      cfg.rest_rate           ?? 0.10, 'sc-rest-rate-v',   '/tick')
+    set('sc-warmth-rate',    cfg.warmth_rate         ?? 0.09, 'sc-warmth-rate-v', '/tick')
+    set('sc-social-rate',    cfg.social_rate         ?? 0.06, 'sc-social-rate-v', '/tick')
+    set('sc-cooked-restore', cfg.cooked_food_restore ?? 45,   'sc-cooked-v',      ' pts')
+    set('sc-raw-restore',    cfg.raw_food_restore    ?? 25,   'sc-raw-v',         ' pts')
+    set('sc-event-chance',   cfg.event_chance        ?? 1.0,  'sc-event-v',       '×')
     const hel = document.getElementById('adm-hours-tick')
     if (hel) { hel.value = String(cfg.hours_per_tick ?? 1) }
   } catch(e) {}
@@ -1522,10 +1702,10 @@ async function saveSimConfig() {
   const g = id => parseFloat(document.getElementById(id)?.value ?? 1)
   const gi = id => parseInt(document.getElementById(id)?.value ?? 1)
   const body = {
-    hunger_decay:        g('sc-hunger-decay'),
-    rest_decay:          g('sc-rest-decay'),
-    warmth_decay:        g('sc-warmth-decay'),
-    social_decay:        g('sc-social-decay'),
+    hunger_rate:         g('sc-hunger-rate'),
+    rest_rate:           g('sc-rest-rate'),
+    warmth_rate:         g('sc-warmth-rate'),
+    social_rate:         g('sc-social-rate'),
     cooked_food_restore: g('sc-cooked-restore'),
     raw_food_restore:    g('sc-raw-restore'),
     event_chance:        g('sc-event-chance'),
@@ -1927,6 +2107,12 @@ async function init() {
       if (d.recent_events) liveEvents = d.recent_events
       if (d.world_state?.tick != null) historyRange.max = d.world_state.tick
     }
+  } catch(ex) {}
+
+  // Load initial conversations
+  try {
+    const cr = await fetch('/village/conversations?limit=6')
+    if (cr.ok) renderConversations(await cr.json())
   } catch(ex) {}
 
   document.getElementById('loading').style.display = 'none'

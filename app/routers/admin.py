@@ -223,11 +223,11 @@ async def set_sim_config(
         raise HTTPException(status_code=503, detail="World not initialised.")
     cfg = world.sim_config
     # Validate and clamp values
-    float_keys = {"hunger_decay", "rest_decay", "warmth_decay", "social_decay",
+    float_keys = {"hunger_rate", "rest_rate", "warmth_rate", "social_rate",
                   "cooked_food_restore", "raw_food_restore", "event_chance"}
     for k in float_keys:
         if k in body:
-            cfg[k] = round(max(0.0, min(10.0, float(body[k]))), 2)
+            cfg[k] = round(max(0.0, min(10.0, float(body[k]))), 3)
     if "hours_per_tick" in body:
         # Supported values: 0.25, 0.5, 1, 2, 3, 4
         allowed = {0.25, 0.5, 1.0, 2.0, 3.0, 4.0}
@@ -877,6 +877,26 @@ async def override_agent_goal(
 # ---------------------------------------------------------------------------
 # Creature admin
 # ---------------------------------------------------------------------------
+
+@router.get("/admin/creatures")
+async def list_creatures(
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    result = await db.execute(select(Creature).order_by(Creature.creature_type))
+    creatures = result.scalars().all()
+    return [
+        {
+            "id": c.id,
+            "creature_type": c.creature_type,
+            "x": c.x,
+            "y": c.y,
+            "state": c.state,
+            "spawned_tick": c.spawned_tick,
+        }
+        for c in creatures
+    ]
+
 
 @router.delete("/creatures/{creature_id}", status_code=204)
 async def delete_creature(

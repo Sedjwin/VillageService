@@ -70,18 +70,18 @@ def decay_needs(
     cfg = sim_config or {}
     n = dict(needs)
 
-    n["hunger"] = min(100, n.get("hunger", 0) + 0.35 * cfg.get("hunger_decay", 1.0))
-    n["rest"]   = min(100, n.get("rest",   0) + 0.22 * cfg.get("rest_decay",   1.0))
+    n["hunger"] = min(100, n.get("hunger", 0) + cfg.get("hunger_rate", 0.15))
+    n["rest"]   = min(100, n.get("rest",   0) + cfg.get("rest_rate",   0.10))
 
     warmth_mult = _SEASON_WARMTH_MULTIPLIER.get(season, 1.0)
-    warmth_rate = 0.18 * warmth_mult * cfg.get("warmth_decay", 1.0)
+    warmth_rate = cfg.get("warmth_rate", 0.09) * warmth_mult
     if has_shelter:
         warmth_rate *= 0.3
     if has_fire_nearby:
         warmth_rate *= 0.2
     n["warmth"] = min(100, n.get("warmth", 0) + warmth_rate)
 
-    n["social"] = min(100, n.get("social", 0) + 0.12 * cfg.get("social_decay", 1.0))
+    n["social"] = min(100, n.get("social", 0) + cfg.get("social_rate", 0.06))
 
     return {k: round(v, 2) for k, v in n.items()}
 

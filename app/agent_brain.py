@@ -33,17 +33,66 @@ def _mood_description(mood: float) -> str:
 
 
 def _needs_summary(needs: dict) -> str:
-    def _status(v):
-        if v < 30: return "fine"
-        if v < 55: return "moderate"
-        if v < 72: return "noticeable"
-        if v < 85: return "pressing"
-        return "URGENT"
+    """Needs are pressure values: 0 = fully satisfied, 100 = critical/dangerous."""
+    THRESHOLDS = [
+        (30,  "fine"),
+        (55,  "mild"),
+        (72,  "noticeable"),
+        (85,  "pressing"),
+        (95,  "URGENT"),
+        (101, "CRITICAL"),
+    ]
+    CRITICAL_LABEL = {
+        "hunger": "STARVING",
+        "rest":   "EXHAUSTED",
+        "warmth": "FREEZING",
+        "social": "ISOLATED",
+    }
+    def _status(key, v):
+        for threshold, label in THRESHOLDS:
+            if v < threshold:
+                return label
+        return CRITICAL_LABEL.get(key, "CRITICAL")
+
     parts = []
-    for key, label in [("hunger", "Hunger"), ("rest", "Rest"), ("warmth", "Warmth"), ("social", "Social")]:
+    for key, label in [("hunger", "Hunger"), ("rest", "Fatigue"), ("warmth", "Cold"), ("social", "Lonely")]:
         val = needs.get(key, 0)
-        parts.append(f"{label}: {int(val)}% ({_status(val)})")
-    return "  ".join(parts)
+        parts.append(f"{label}: {int(val)}/100 ({_status(key, val)})")
+    header = "Needs [0=satisfied · 100=critical]: "
+    return header + "  ".join(parts)
+
+
+def _needs_advice(needs: dict, inventory: dict) -> str:
+    """
+    Compute practical inventory-aware advice for the agent's current needs.
+    This short-circuits common failure modes (starving while holding food, etc.).
+    """
+    lines = []
+    hunger  = needs.get("hunger",  0)
+    fatigue = needs.get("rest",    0)
+    cold    = needs.get("warmth",  0)
+    lonely  = needs.get("social",  0)
+
+    has_cooked = inventory.get("cooked_food", 0) > 0
+    has_raw    = inventory.get("raw_food",    0) > 0
+
+    if hunger >= 72:
+        if has_cooked:
+            lines.append(f"⚠ Hunger {int(hunger)}/100 — you have cooked_food in your inventory. Eat it now with the eat action.")
+        elif has_raw:
+            lines.append(f"⚠ Hunger {int(hunger)}/100 — you have raw_food in your inventory. Eat it now (raw is fine when nothing else is available).")
+        else:
+            lines.append(f"⚠ Hunger {int(hunger)}/100 — no food in inventory. Find or gather food.")
+    if fatigue >= 72:
+        lines.append(f"⚠ Fatigue {int(fatigue)}/100 — you need rest. Use the rest action.")
+    if cold >= 72:
+        lines.append(f"⚠ Cold {int(cold)}/100 — find warmth (a campfire, shelter, or build one).")
+
+    all_comfortable = hunger < 50 and fatigue < 50 and cold < 50 and lonely < 50
+    if all_comfortable:
+        lines.append("All needs comfortable — this is your time. Pursue your goal, explore, build, or talk.")
+
+    return "\n".join(lines) if lines else ""
 
 
 def _format_inventory(inventory: dict) -> str:
@@ -89,6 +138,68 @@ def _format_visible_tiles(visible_tiles: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_COORD_RE = re.compile(r'\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)')
+
+
+def _extract_known_destinations(goal: str | None, memory: list[str], agent_x: int, agent_y: int) -> str:
+    """
+    Scan the agent's goal and recent memory for explicit coordinates and return
+    them as a navigable destinations list.  Deduplicates and excludes the
+    agent's current tile.
+    """
+    seen: dict[tuple[int, int], str] = {}
+
+    def _scan(text: str, source: str):
+        for m in _COORD_RE.finditer(text):
+            x, y = int(m.group(1)), int(m.group(2))
+            if (x, y) == (agent_x, agent_y):
+                continue
+            if (x, y) not in seen:
+                seen[(x, y)] = source
+
+    if goal:
+        _scan(goal, "current goal")
+    for entry in reversed(memory[-10:]):
+        _scan(entry, "memory")
+
+    if not seen:
+        return ""
+    lines = []
+    for (x, y), src in seen.items():
+        dist = abs(x - agent_x) + abs(y - agent_y)
+        lines.append(f"  ({x},{y}) — {dist} tiles away [from {src}]")
+    return "\n".join(lines)
+
+
+def _format_landmarks(visible_tiles: list[dict], agent_x: int, agent_y: int, nearby_agents: list[dict] | None = None) -> str:
+    """Extract notable navigable landmarks from visible tiles, with occupancy counts."""
+    NOTABLE_FEATURES = {"campfire", "well", "notice_board", "ruins", "workshop", "forge", "dock"}
+    NOTABLE_BUILDINGS = {"campfire", "well", "notice_board", "house", "basic_shelter", "workshop", "forge", "road_tile"}
+
+    # Count agents per tile
+    occupancy: dict[tuple, int] = {}
+    for a in (nearby_agents or []):
+        k = (a.get("x", 0), a.get("y", 0))
+        occupancy[k] = occupancy.get(k, 0) + 1
+
+    landmarks = []
+    for t in visible_tiles:
+        x, y = t.get("x", 0), t.get("y", 0)
+        if x == agent_x and y == agent_y:
+            continue
+        features = t.get("features", [])
+        buildings = [b.get("type", "") for b in t.get("buildings", [])]
+        notable = [f for f in features if f in NOTABLE_FEATURES] + [b for b in buildings if b in NOTABLE_BUILDINGS]
+        if notable:
+            dist = abs(x - agent_x) + abs(y - agent_y)
+            occ = occupancy.get((x, y), 0)
+            occ_str = f" — {occ} agent{'s' if occ != 1 else ''} already here" if occ else ""
+            landmarks.append(f"  ({x},{y}) — {', '.join(notable)} [{dist} tiles]{occ_str}")
+    if not landmarks:
+        return "  None visible from here."
+    return "\n".join(landmarks[:8])
+
+
 def _format_nearby_agents(nearby: list[dict]) -> str:
     if not nearby:
         return "  No one nearby."
@@ -126,6 +237,10 @@ class AgentBrain:
         current_tile = next(
             (t for t in visible_tiles if t.get("x") == agent.x and t.get("y") == agent.y),
             None,
+        )
+        landmarks_str = _format_landmarks(visible_tiles, agent.x, agent.y, nearby_agents)
+        known_destinations_str = _extract_known_destinations(
+            agent.current_goal, agent.village_memory, agent.x, agent.y
         )
         tile_narrative = current_tile.get("narrative", "unfamiliar ground") if current_tile else "unfamiliar ground"
 
@@ -167,14 +282,16 @@ You are {agent.name}. {agent.personality_summary}
 You are living in a real world, building a life in a new settlement.
 Your needs are physical realities — but most of the time they are *fine*. You don't
 obsess over food when you're not hungry. You don't chase rest when you're not tired.
-Needs only become urgent above 72%. Below that, they are background noise.
+Needs are pressure values from 0 to 100: 0 means fully satisfied, 100 means critical.
+High numbers are bad. Below 50 means you are fine — do not fixate on it.
+A cold of 5 means you are warm enough; you do not need to stay near a fire.
+A hunger of 0 means you are full; you do not need to seek food.
+Check your inventory first — if you are hungry and carrying food, eat it immediately.
 
-When your needs are comfortable, your mind is free for the things that actually matter:
-exploring, building, crafting, forming relationships, pursuing long-term goals.
-A rich life is built between meals — not spent waiting for the next one.
+When comfortable, pursue what genuinely matters to you: explore, build, craft, connect.
+Staying near a fire when warm is wasted time. A rich life happens away from camp.
 
-Your personality shapes everything: how you explore, what you build, how you treat others.
-Be yourself. Think in months, not minutes.
+Your personality shapes everything. Be yourself. Think in months, not minutes.
 """
 
         user_prompt = f"""\
@@ -192,9 +309,12 @@ NEARBY PEOPLE:
 
 YOUR INVENTORY:
   {_format_inventory(agent.inventory)}
-
+{f"{chr(10)}{_needs_advice(agent.needs, agent.inventory)}{chr(10)}" if _needs_advice(agent.needs, agent.inventory) else ""}
 CRAFTABLE RIGHT NOW: {craftable_str}
 
+NEARBY LANDMARKS (visible):
+{landmarks_str if landmarks_str else "  None visible from here."}
+{f"KNOWN DESTINATIONS (from goal & memory — use navigate to reach these):{chr(10)}{known_destinations_str}" if known_destinations_str else ""}
 CURRENT GOAL: {agent.current_goal or "None — decide what matters to you"}{
   f" (set {world_state.tick - agent.goal_set_tick} ticks ago)" if agent.current_goal and agent.goal_set_tick else ""
 }{
@@ -215,7 +335,9 @@ RECENT MEMORY:
 Choose your next action. Be yourself. Think practically about your needs.
 
 Valid actions (respond with ONLY valid JSON, one action):
-{{"action":"move","direction":"n/s/e/w/ne/nw/se/sw","thought":"..."}}
+{{"action":"navigate","x":0,"y":0,"thought":"..."}}                          ← pathfind to coordinates (multi-tick journey, handles terrain automatically)
+{{"action":"navigate","destination":"campfire","thought":"..."}}              ← pathfind to a named landmark (campfire/well/notice_board/camp/home)
+{{"action":"move","direction":"n/s/e/w/ne/nw/se/sw","thought":"..."}}       ← single step in a direction (exploring adjacent tiles)
 {{"action":"gather","resource":"type","thought":"..."}}
 {{"action":"eat","food":"raw_food or cooked_food","thought":"..."}}
 {{"action":"craft","recipe":"name","thought":"..."}}
@@ -227,6 +349,9 @@ Valid actions (respond with ONLY valid JSON, one action):
 {{"action":"write","content":"...","medium":"note","thought":"..."}}
 {{"action":"set_goal","goal":"...","thought":"..."}}
 {{"action":"wait","thought":"..."}}
+
+Use 'navigate' to travel anywhere — visible or not. If your goal names a coordinate, navigate there directly. Use 'move' only for casual single-step exploration of adjacent tiles.
+If a landmark shows multiple agents already there, consider navigating to a different one or building your own nearby rather than crowding the same spot.
 """
 
         messages = [
@@ -285,7 +410,7 @@ Valid actions (respond with ONLY valid JSON, one action):
         # Validate action field
         valid_actions = {
             "move", "gather", "eat", "craft", "build", "speak",
-            "rest", "examine", "loot", "write", "set_goal", "wait",
+            "rest", "examine", "loot", "write", "set_goal", "wait", "navigate",
         }
         if action.get("action") not in valid_actions:
             logger.warning("AgentBrain: unknown action %r, defaulting to wait", action.get("action"))

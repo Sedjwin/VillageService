@@ -254,5 +254,6 @@ async def get_tick_snapshot(tick: int, db: AsyncSession = Depends(get_db)):
         "tick": snap.tick,
         "world_state": json.loads(snap.world_json),
         "agents": json.loads(snap.agents_json),
+        "tiles": json.loads(snap.tiles_json) if snap.tiles_json else None,
         "events": [event_to_out(e).model_dump() for e in events],
     }

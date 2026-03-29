@@ -39,14 +39,14 @@ class WorldState(Base):
     _sim_config: Mapped[str] = mapped_column(Text, default="{}")
     _gateway_config: Mapped[str] = mapped_column(Text, default="{}")
 
-    # Default tuning values — multipliers applied in physics layer
+    # Default tuning values — direct per-tick rates and absolute amounts
     _SIM_DEFAULTS: dict = {
-        "hunger_decay":        1.0,   # multiplier on base 0.35/tick
-        "rest_decay":          1.0,   # multiplier on base 0.22/tick
-        "warmth_decay":        1.0,   # multiplier on base 0.18/tick
-        "social_decay":        1.0,   # multiplier on base 0.12/tick
-        "cooked_food_restore": 1.0,   # multiplier on base 45 points
-        "raw_food_restore":    1.0,   # multiplier on base 25 points
+        "hunger_rate":         0.15,  # hunger pressure added per tick (0=fine, 100=starving)
+        "rest_rate":           0.10,  # fatigue pressure added per tick
+        "warmth_rate":         0.09,  # cold pressure added per tick (modified by season/fire/shelter)
+        "social_rate":         0.06,  # loneliness pressure added per tick
+        "cooked_food_restore": 45.0,  # hunger points removed when eating cooked food
+        "raw_food_restore":    25.0,  # hunger points removed when eating raw food
         "hours_per_tick":      1.0,   # game-hours advanced per tick (0.25/0.5/1/2/3/4)
         "event_chance":        1.0,   # world-event frequency multiplier
     }
@@ -306,8 +306,9 @@ class TickSnapshot(Base):
     __tablename__ = "tick_snapshots"
 
     tick: Mapped[int] = mapped_column(Integer, primary_key=True)
-    world_json: Mapped[str] = mapped_column(Text)   # WorldStateOut dict
-    agents_json: Mapped[str] = mapped_column(Text)  # compact agent list
+    world_json: Mapped[str] = mapped_column(Text)        # WorldStateOut dict
+    agents_json: Mapped[str] = mapped_column(Text)       # compact agent list
+    tiles_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # tile buildings/features/items
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
@@ -327,6 +328,7 @@ class Creature(Base):
     state: Mapped[str] = mapped_column(String(16), default="idle")
     last_tick: Mapped[int] = mapped_column(Integer, default=0)
     spawned_tick: Mapped[int] = mapped_column(Integer, default=0)
+    patience_tick: Mapped[int] = mapped_column(Integer, default=0)
 
 
 # ---------------------------------------------------------------------------

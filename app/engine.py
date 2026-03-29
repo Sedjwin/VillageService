@@ -13,6 +13,7 @@ from datetime import datetime
 import json
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -58,6 +59,15 @@ _MAX_SNAPSHOTS = 2000
 
 async def _save_tick_snapshot(db: AsyncSession, world: WorldState, agents: list[VillageAgent]):
     """Save a compact snapshot of this tick for timeline replay."""
+    # Capture tile state — only tiles with buildings, items, or non-empty features
+    tiles_result = await db.execute(select(Tile))
+    all_tiles = tiles_result.scalars().all()
+    tiles_data = [
+        {"x": t.x, "y": t.y, "buildings": t.buildings, "features": t.features, "items": t.items}
+        for t in all_tiles
+        if t.buildings or t.items or t.features
+    ]
+
     snap = TickSnapshot(
         tick=world.tick,
         world_json=json.dumps({
@@ -87,6 +97,7 @@ async def _save_tick_snapshot(db: AsyncSession, world: WorldState, agents: list[
                 "eye_style": a.avatar_eye_style,
             },
         } for a in agents]),
+        tiles_json=json.dumps(tiles_data),
     )
     db.add(snap)
 
@@ -190,7 +201,18 @@ async def _ensure_tile_exists(
     tile.items = []
     tile.buildings = []
     tile.explored_by = []
-    db.add(tile)
+
+    # Use a savepoint so a concurrent duplicate insert only rolls back the
+    # savepoint, not the entire session transaction.
+    try:
+        async with db.begin_nested():
+            db.add(tile)
+    except IntegrityError:
+        # Another concurrent coroutine inserted this tile first — fetch it.
+        existing = await _get_tile(db, x, y)
+        if existing:
+            return existing
+        raise
 
     # Chance to spawn a creature on new tiles
     from app.creatures import maybe_spawn_creature
@@ -239,6 +261,8 @@ async def _step_agent_movement(
 
     if not remaining_path:
         agent.state = "idle"
+    else:
+        agent.state = "traveling"
 
     # Mark explored
     explored = tile.explored_by
@@ -274,8 +298,8 @@ async def _tick_needs(
     cfg = world.sim_config
     needs = decay_needs(agent.needs, world.season, has_shelter, has_fire, cfg)
 
-    cooked_restore = 45 * cfg.get("cooked_food_restore", 1.0)
-    raw_restore    = 25 * cfg.get("raw_food_restore",    1.0)
+    cooked_restore = cfg.get("cooked_food_restore", 45.0)
+    raw_restore    = cfg.get("raw_food_restore",    25.0)
 
     # Auto-eat only when genuinely hungry
     if needs.get("hunger", 0) >= 82 and agent.inventory.get("cooked_food", 0) > 0:
@@ -490,7 +514,10 @@ async def _execute_action(
     act = action.get("action", "wait")
     thought = action.get("thought", "")
 
-    if act == "move":
+    if act == "navigate":
+        await _action_navigate(agent, action, db, world, engine, tiles_map)
+
+    elif act == "move":
         await _action_move(agent, action, db, world, engine, tiles_map)
 
     elif act == "gather":
@@ -605,6 +632,84 @@ async def _action_move(
         db, world, "movement",
         f"{agent.name} moved {direction} to ({tx},{ty}).",
         [agent.agent_id], tx, ty,
+    )
+
+
+def _resolve_named_destination(
+    name: str, tiles_map: dict, agent_x: int = 0, agent_y: int = 0
+) -> tuple[int, int] | None:
+    """Resolve a named landmark to the nearest matching tile coordinates."""
+    name_lower = name.lower().replace(" ", "_")
+
+    # Hard aliases for camp/home
+    if name_lower in ("camp", "home", "base", "starting_camp", "start"):
+        return (0, 0)
+
+    # Find all matching tiles, return the closest one to the agent
+    best: tuple[int, int] | None = None
+    best_dist = float("inf")
+
+    for (x, y), tile in tiles_map.items():
+        features = tile.features if hasattr(tile, "features") else tile.get("features", [])
+        matched = name_lower in features
+        if not matched:
+            buildings = tile.buildings if hasattr(tile, "buildings") else tile.get("buildings", [])
+            matched = any(b.get("type", "").lower() == name_lower for b in buildings)
+        if matched:
+            dist = abs(x - agent_x) + abs(y - agent_y)
+            if dist < best_dist:
+                best_dist = dist
+                best = (x, y)
+
+    return best
+
+
+async def _action_navigate(
+    agent: VillageAgent,
+    action: dict,
+    db: AsyncSession,
+    world: WorldState,
+    engine: "VillageEngine",
+    tiles_map: dict,
+):
+    """Compute an A* path to a destination and store it as the agent's travel_path."""
+    destination = action.get("destination", "")
+    tx = action.get("x")
+    ty = action.get("y")
+
+    # Resolve named destination if coordinates not provided
+    if destination and (tx is None or ty is None):
+        resolved = _resolve_named_destination(destination, tiles_map, agent.x, agent.y)
+        if resolved is None:
+            agent.add_memory(f"Wanted to go to '{destination}' but couldn't locate it.")
+            return
+        tx, ty = resolved
+
+    if tx is None or ty is None:
+        agent.add_memory("Navigate action missing destination coordinates.")
+        return
+
+    tx, ty = int(tx), int(ty)
+
+    if tx == agent.x and ty == agent.y:
+        agent.add_memory(f"Already standing at ({tx},{ty}).")
+        return
+
+    path = find_path(agent.x, agent.y, tx, ty, tiles_map, max_steps=300)
+
+    if not path:
+        agent.add_memory(f"Couldn't find a route to ({tx},{ty}) — terrain may be blocking the way.")
+        return
+
+    agent.travel_path = [[p[0], p[1]] for p in path]
+    agent.state = "traveling"
+    dest_label = destination if destination else f"({tx},{ty})"
+    agent.add_memory(f"Set course for {dest_label} — {len(path)} steps.")
+
+    await _log_event(
+        db, world, "movement",
+        f"{agent.name} is heading to {dest_label} ({len(path)} steps).",
+        [agent.agent_id], agent.x, agent.y,
     )
 
 
@@ -751,7 +856,7 @@ async def _action_speak(
     target = action.get("target", "broadcast")
     message = action.get("message", "")
 
-    agent.add_memory(f"Said to {target}: \"{message[:80]}\"")
+    agent.add_memory(f"Said to {target}: \"{message}\"")
     agent.needs = satisfy_need(agent.needs, "social", 10)
 
     # Find target agent if specific
@@ -761,10 +866,10 @@ async def _action_speak(
             (a for a in all_agents if a.name.lower() == target.lower()), None
         )
         if target_agent:
-            target_agent.add_memory(f"{agent.name} said: \"{message[:80]}\"")
+            target_agent.add_memory(f"{agent.name} said: \"{message}\"")
             target_agent.needs = satisfy_need(target_agent.needs, "social", 5)
 
-    description = f"{agent.name} said: \"{message[:120]}\""
+    description = f"{agent.name} said: \"{message}\""
     await _log_event(
         db, world, "speak",
         description,
@@ -782,8 +887,8 @@ async def _action_eat(
     food = action.get("food", "")
     inv = agent.inventory
     cfg = world.sim_config
-    cooked_restore = 40 * cfg.get("cooked_food_restore", 1.0)
-    raw_restore    = 22 * cfg.get("raw_food_restore",    1.0)
+    cooked_restore = cfg.get("cooked_food_restore", 45.0)
+    raw_restore    = cfg.get("raw_food_restore",    25.0)
 
     if food == "cooked_food" and inv.get("cooked_food", 0) > 0:
         inv["cooked_food"] -= 1
@@ -984,6 +1089,15 @@ async def _broadcast_state(
     )
     recent_events = list(events_result.scalars().all())
 
+    # Get recent completed conversations
+    convos_result = await db.execute(
+        select(Conversation)
+        .where(Conversation.completed == True)
+        .order_by(Conversation.tick.desc())
+        .limit(6)
+    )
+    recent_convos = list(convos_result.scalars().all())
+
     # Get all tiles (viewers see everything)
     tiles_result = await db.execute(select(Tile))
     all_tiles = tiles_result.scalars().all()
@@ -996,6 +1110,17 @@ async def _broadcast_state(
         "world_state": world_to_out(world).model_dump(),
         "agents": [agent_to_out(a).model_dump() for a in agents],
         "recent_events": [event_to_out(e).model_dump() for e in recent_events],
+        "recent_conversations": [
+            {
+                "id": c.id,
+                "tick": c.tick,
+                "game_day": c.game_day,
+                "game_hour": c.game_hour,
+                "participants": c.participants,
+                "messages": c.messages,
+            }
+            for c in recent_convos
+        ],
         "tiles": [tile_to_out(t).model_dump() for t in all_tiles],
         "creatures": [
             CreatureOut(id=c.id, creature_type=c.creature_type, x=c.x, y=c.y, state=c.state).model_dump()
