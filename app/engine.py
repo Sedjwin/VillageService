@@ -301,8 +301,8 @@ async def _tick_needs(
     cooked_restore = cfg.get("cooked_food_restore", 45.0)
     raw_restore    = cfg.get("raw_food_restore",    25.0)
 
-    # Auto-eat only when genuinely hungry
-    if needs.get("hunger", 0) >= 82 and agent.inventory.get("cooked_food", 0) > 0:
+    # Auto-eat when hungry — cooked at 75, raw at 85 (don't let them suffer waiting)
+    if needs.get("hunger", 0) >= 75 and agent.inventory.get("cooked_food", 0) > 0:
         inv = agent.inventory
         inv["cooked_food"] -= 1
         if inv["cooked_food"] == 0:
@@ -310,7 +310,7 @@ async def _tick_needs(
         agent.inventory = inv
         needs = satisfy_need(needs, "hunger", cooked_restore)
         agent.add_memory("Ate some cooked food — felt better immediately.")
-    elif needs.get("hunger", 0) >= 91 and agent.inventory.get("raw_food", 0) > 0:
+    elif needs.get("hunger", 0) >= 85 and agent.inventory.get("raw_food", 0) > 0:
         inv = agent.inventory
         inv["raw_food"] -= 1
         if inv["raw_food"] == 0:

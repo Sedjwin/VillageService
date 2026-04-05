@@ -88,7 +88,7 @@ What do you say next? (in character, no name prefix, finish every sentence)"""
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"].strip()
+        return (data["choices"][0]["message"].get("content") or "").strip()
 
 
 def _summarise_inventory(inventory: dict) -> str:
@@ -133,6 +133,8 @@ async def run_conversation(
     convo = Conversation(
         id=str(uuid.uuid4()),
         tick=world_state.tick,
+        game_day=world_state.game_day,
+        game_hour=world_state.game_hour,
         x=agent_a.x,
         y=agent_a.y,
         completed=False,

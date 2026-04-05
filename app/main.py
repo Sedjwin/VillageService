@@ -158,6 +158,8 @@ async def _migrate_db():
             "ALTER TABLE world_state ADD COLUMN _gateway_config TEXT DEFAULT '{}'",
             "ALTER TABLE village_agents ADD COLUMN goal_set_tick INTEGER DEFAULT 0",
             "ALTER TABLE tick_snapshots ADD COLUMN tiles_json TEXT",
+            "ALTER TABLE conversations ADD COLUMN game_day INTEGER DEFAULT 1",
+            "ALTER TABLE conversations ADD COLUMN game_hour INTEGER DEFAULT 8",
         ]:
             try:
                 await conn.execute(text(stmt))

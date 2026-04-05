@@ -246,6 +246,8 @@ class Conversation(Base):
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     tick: Mapped[int] = mapped_column(Integer, default=0)
+    game_day: Mapped[int] = mapped_column(Integer, default=1)
+    game_hour: Mapped[int] = mapped_column(Integer, default=8)
     x: Mapped[int] = mapped_column(Integer, default=0)
     y: Mapped[int] = mapped_column(Integer, default=0)
     _participants: Mapped[str] = mapped_column(Text, default="[]")

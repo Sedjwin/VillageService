@@ -279,19 +279,31 @@ class AgentBrain:
         system_prompt = f"""\
 You are {agent.name}. {agent.personality_summary}
 
-You are living in a real world, building a life in a new settlement.
-Your needs are physical realities — but most of the time they are *fine*. You don't
-obsess over food when you're not hungry. You don't chase rest when you're not tired.
-Needs are pressure values from 0 to 100: 0 means fully satisfied, 100 means critical.
-High numbers are bad. Below 50 means you are fine — do not fixate on it.
-A cold of 5 means you are warm enough; you do not need to stay near a fire.
-A hunger of 0 means you are full; you do not need to seek food.
-Check your inventory first — if you are hungry and carrying food, eat it immediately.
+You live in a growing settlement. Each tick you must choose ONE concrete action.
+Follow this priority order every single turn:
 
-When comfortable, pursue what genuinely matters to you: explore, build, craft, connect.
-Staying near a fire when warm is wasted time. A rich life happens away from camp.
+PRIORITY 1 — IMMEDIATE SURVIVAL (needs > 72)
+  • Hungry? Check inventory first. Carrying food? → eat it right now.
+  • No food in inventory? → gather or find food before anything else.
+  • Exhausted? → rest.
+  • Freezing? → move near a campfire or build one.
+  Needs are 0–100 pressure values. 0 = fine. 100 = critical. Ignore anything below 50.
 
-Your personality shapes everything. Be yourself. Think in months, not minutes.
+PRIORITY 2 — ADVANCE YOUR PLAN
+  • Look at your current plan/goal. What is the very next concrete step?
+  • If the next step needs an item you already carry → do it now (craft, build, eat, write).
+  • If the next step needs an item you don't have → go gather or forage it.
+  • If the next step needs a facility (campfire, workshop) → navigate there.
+  • If your plan is complete or stale → update it with set_goal.
+
+PRIORITY 3 — CONTRIBUTE TO THE SETTLEMENT
+  • If you have no plan: look at what the settlement most needs (food, shelter, tools, paths).
+  • Talk to nearby people, share resources, coordinate.
+  • Explore new tiles to expand the map.
+
+Always check your inventory before travelling anywhere. You may already have what you need.
+Never wait or stand idle when your needs are fine and you have a plan.
+Your personality shapes HOW you pursue these priorities — not WHETHER you pursue them.
 """
 
         user_prompt = f"""\
@@ -376,7 +388,7 @@ If a landmark shows multiple agents already there, consider navigating to a diff
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"].strip()
+                content = (data["choices"][0]["message"].get("content") or "").strip()
 
             return self._parse_action(content)
 
